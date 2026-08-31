@@ -172,7 +172,19 @@ function connect() {
     state.connected = true;
     state.attempt = 0;
     state.lastIncomingAt = Date.now();
-    send({ v: 1, type: 'hello', client_id: state.clientId, tab: null });
+    // 带上当前活动标签页信息，便于网关按 host 精确选中目标标签页，
+    // 避免前台页面（如哔哩哔哩）被误当成任务目标。
+    var helloTab = null;
+    try {
+      chrome.tabs.query({ active: true, currentWindow: true }, function (tabs) {
+        if (tabs && tabs.length > 0 && tabs[0].url) {
+          helloTab = { url: tabs[0].url, title: tabs[0].title || '' };
+        }
+        send({ v: 1, type: 'hello', client_id: state.clientId, tab: helloTab });
+      });
+    } catch (err) {
+      send({ v: 1, type: 'hello', client_id: state.clientId, tab: null });
+    }
     startHeartbeat();
     broadcastStatus();
     console.info('[oap] 已连接到网关：' + state.gatewayUrl);
@@ -294,8 +306,50 @@ function handleServerMessage(raw) {
 // ------------------------------------------------------------------ 任务执行
 
 /**
+ * 已知 AI 对话站点域名（host 或 host 后缀）。host 为空时优先在其中选择，
+ * 避免把前台无关页面（如视频站）误当成任务目标。
+ * @type {Array<string>}
+ */
+var AI_SITE_HOSTS = [
+  'chat.deepseek.com',
+  'deepseek.com',
+  'chatgpt.com',
+  'chat.openai.com',
+  'claude.ai',
+  'kimi.moonshot.cn',
+  'kimi.com',
+  'tongyi.aliyun.com',
+  'qwen.ai',
+  'yuanbao.tencent.com',
+  'doubao.com',
+  'gemini.google.com',
+  'aistudio.google.com',
+  'grok.com',
+  'poe.com',
+  'perplexity.ai'
+];
+
+/**
+ * 判断某个 host 是否命中已知 AI 站点（支持精确匹配或后缀匹配）。
+ * @param {string} host 待判定域名
+ * @returns {boolean}
+ */
+function isAiSite(host) {
+  if (!host) {
+    return false;
+  }
+  for (var i = 0; i < AI_SITE_HOSTS.length; i += 1) {
+    if (host === AI_SITE_HOSTS[i] || host.endsWith('.' + AI_SITE_HOSTS[i])) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
  * 查找承载目标站点的标签页。
- * @param {string} host 目标域名；为空时返回当前活动标签页
+ * @param {string} host 目标域名；为空时优先返回已知 AI 对话站点标签页，
+ *                       都没有再退回当前活动标签页
  * @returns {Promise<chrome.tabs.Tab|null>} 命中的标签页
  */
 function findTargetTab(host) {
@@ -315,9 +369,16 @@ function findTargetTab(host) {
         resolve(null);
         return;
       }
+      // host 为空：优先选已知 AI 站点，避免前台无关页面被误用
       for (var j = 0; j < tabs.length; j += 1) {
-        if (tabs[j].active) {
+        if (isAiSite(hostOf(tabs[j].url || ''))) {
           resolve(tabs[j]);
+          return;
+        }
+      }
+      for (var k = 0; k < tabs.length; k += 1) {
+        if (tabs[k].active) {
+          resolve(tabs[k]);
           return;
         }
       }

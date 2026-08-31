@@ -14,11 +14,13 @@
 (function () {
   'use strict';
 
-  /** 轮询与结束判定的默认参数（单位：毫秒） */
+  /** 轮询与结束判定的默认参数（单位：毫秒 / 次） */
   var CFG = {
-    pollMs: 400,          // DOM 轮询间隔
-    stableAfterNetMs: 1500, // 收到流结束信号后，要求 DOM 静止多久才算完成
-    stableDomOnlyMs: 6000,  // 未收到网络信号时，要求 DOM 静止多久才算完成
+    pollMs: 400,            // DOM 轮询间隔
+    // 结束判定改为「连续多次轮询无变化」计数，而非「绝对静默时长」，
+    // 以容忍深度思考等场景下的长自然停顿，避免把未输出完的内容误判为完成。
+    stablePollsAfterNet: 6, // 已收到流结束信号后，需连续 6 次轮询(约2.4s)文本无变化才算完成
+    stablePollsDomOnly: 25, // 无网络信号时，需连续 25 次轮询(约10s)文本无变化才算完成
     startGraceMs: 3000,     // 任务开始后的最短观察时间，防止过早收尾
     elementTimeoutMs: 15000, // 等待输入框/发送按钮出现的上限
     snapshotDelayMs: 300     // 点击发送后，等待新消息容器渲染的时间
@@ -133,6 +135,150 @@
    * @param {Element} el 目标元素
    * @returns {string} 归一化后的文本
    */
+  /**
+   * 判断元素是否为模型的「思考块」（应被忽略，只保留最终回复）。
+   *
+   * 覆盖常见结构：
+   *   - DeepSeek 网页版的 ``<details>`` 折叠区（summary 为 "Thought for N seconds"）
+   *   - 任何 class / id / data-* 属性包含 think / thought / reasoning 关键词的元素
+   *   - 标准 ``<think>`` 标签
+   *
+   * @param {Element} el 待判定元素
+   * @returns {boolean}
+   */
+  function isThinkBlock(el) {
+    if (!el || el.nodeType !== 1) {
+      return false;
+    }
+    var tag = (el.tagName || '').toLowerCase();
+    if (tag === 'details' || tag === 'think') {
+      return true;
+    }
+    var sig = (el.className || '') + '|' + (el.id || '');
+    var attrs = el.attributes || [];
+    for (var i = 0; i < attrs.length; i += 1) {
+      sig += '|' + attrs[i].name + '|' + attrs[i].value;
+    }
+    sig = sig.toLowerCase();
+    return /think|thought|reasoning|chain-of-thought|cot/.test(sig);
+  }
+
+  /**
+   * 判断元素自身或其后裔是否包含「思考块」。
+   * @param {Element} el 待判定元素
+   * @returns {boolean}
+   */
+  function containsThinkBlock(el) {
+    if (!el || !el.querySelectorAll) {
+      return false;
+    }
+    if (isThinkBlock(el)) {
+      return true;
+    }
+    var nodes = el.querySelectorAll('*');
+    for (var i = 0; i < nodes.length; i += 1) {
+      if (isThinkBlock(nodes[i])) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * 读取回复容器的完整文本，把模型「思考过程」用 ``<think>...</think>`` 包裹，
+   * 最终答案放在标签之外。
+   *
+   * 设计要点：
+   *   - 思考块（``<details>`` / ``<think>`` / 含 think 关键词的元素）通常可折叠，
+   *     ``innerText`` 对折叠内容返回空，因此读思考块用 ``textContent``（不关心渲染，
+   *     能拿到折叠态下的完整思考正文）；
+   *   - 最终答案区正常可见，用 ``innerText`` 读取即可；
+   *   - 按文档顺序拼接：思考块在前、答案在后。
+   *
+   * @param {Element} el 回复容器
+   * @returns {string} 含 ``<think>`` 包裹的完整回复文本
+   */
+  function readReplyText(el) {
+    if (!el) {
+      return '';
+    }
+    // 1) 收集顶层思考块（跳过嵌套在另一思考块内的）。
+    //    同时记录「含折叠标题的原始文本」(raw) 与「去除 <summary> 后的干净正文」(clean)：
+    //    后续用 raw 从容器全文里精确剔除，答案区只要不在思考块 DOM 内就一定保留。
+    var cleanList = [];
+    var all = el.querySelectorAll('*');
+    for (var i = 0; i < all.length; i += 1) {
+      var node = all[i];
+      if (!isThinkBlock(node)) {
+        continue;
+      }
+      var parent = node.parentElement;
+      var nested = false;
+      while (parent && parent !== el) {
+        if (isThinkBlock(parent)) {
+          nested = true;
+          break;
+        }
+        parent = parent.parentElement;
+      }
+      if (nested) {
+        continue;
+      }
+      // 折叠标题（"Thought for N seconds"）位于 <summary>，不属于思考正文，
+      // 移除 <summary> 后读到的才是纯思考正文。
+      var blockClone = node.cloneNode(true);
+      var summ = blockClone.querySelectorAll('summary');
+      for (var s = 0; s < summ.length; s += 1) {
+        if (summ[s].parentNode) {
+          summ[s].parentNode.removeChild(summ[s]);
+        }
+      }
+      var clean = (blockClone.textContent || '')
+        .replace(/\r\n/g, '\n')
+        .replace(/\u00a0/g, ' ')
+        .trim();
+      // 兜底剔除折叠标题行（"Thought for N seconds" 等，可能不在 <summary> 标签里）
+      clean = clean.replace(/Thought for[^\n]*\n?/gi, '').trim();
+      if (clean) {
+        cleanList.push(clean);
+      }
+    }
+
+    // 2) 主文本：容器全文（textContent，不受折叠/可见性影响）减去各思考块原始文本。
+    //    不再「删除思考块 DOM 后读 innerText」——那样会把命中关键词的答案容器也误删。
+    var full = (el.textContent || '')
+      .replace(/\r\n/g, '\n')
+      .replace(/\u00a0/g, ' ')
+      .trim();
+    // 主文本：容器全文减去「思考正文」(cleanList，已去除 <summary> 标题)。
+    // cleanList 只含思考正文、不含最终答案，因此减去后答案一定保留；
+    // 再清掉残留的 "Thought for N seconds" 标题行。
+    var main = full;
+    for (var r = 0; r < cleanList.length; r += 1) {
+      main = main.split(cleanList[r]).join('');
+    }
+    main = main
+      .replace(/Thought for[^\n]*\n?/gi, '')
+      .replace(/[ \t]+\n/g, '\n')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+    if (!main) {
+      // 兜底：减去思考正文后主文本为空，说明答案可能也被包在思考块内，
+      // 回退容器全文，保证最终答案不丢失。
+      main = full;
+    }
+
+    // 3) 按文档顺序拼接：思考在前，答案在后
+    var out = '';
+    if (cleanList.length > 0) {
+      out += '<think>\n' + cleanList.join('\n\n') + '\n</think>';
+    }
+    if (main) {
+      out += (out ? '\n\n' : '') + main;
+    }
+    return out.trim();
+  }
+
   function readText(el) {
     if (!el) {
       return '';
@@ -412,6 +558,10 @@
       if (tag === 'input' || tag === 'textarea' || el.isContentEditable) {
         continue;
       }
+      // 不选思考块本身（其增长通常最大，但含的是思考过程而非完整回复）
+      if (isThinkBlock(el)) {
+        continue;
+      }
       var length = readText(el).length;
       var previous = snapshot.has(el) ? snapshot.get(el) : 0;
       var delta = length - previous;
@@ -450,198 +600,24 @@
       }
       return x.length - y.length; // 增量相同时取更短（更精确）的容器
     });
+    // 优先选「包含思考块、且自身非思考块」的容器：它是完整回复容器，
+    // 同时含思考过程与最终答案，readReplyText 才能正确分离二者。
+    for (var c = 0; c < list.length; c += 1) {
+      if (!isThinkBlock(list[c].el) && containsThinkBlock(list[c].el)) {
+        return list[c].el;
+      }
+    }
+    for (var d = 0; d < list.length; d += 1) {
+      if (!isThinkBlock(list[d].el)) {
+        return list[d].el;
+      }
+    }
     return list[0].el;
   }
 
-  // ---------------------------------------------------- 工具调用标记解析
 
-  /**
-   * 判断一段文本是否为模型输出的「工具调用」结构化数据，并映射为 OpenAI 兼容结构。
-   *
-   * 约定（JSON 块约定）：模型在表达工具调用时，把内容写成一个 JSON 对象或
-   * JSON 数组，例如：
-   *   {"tool":"shell","cmd":"ls -la"}
-   *   [{"tool":"read","path":"/etc/hosts"}, {"tool":"shell","cmd":"pwd"}]
-   * 也支持用 ```json 围栏包裹的写法。
-   *
-   * 策略（兼容浏览器模型常见的「思考过程」前缀，如 DeepSeek 的
-   * ``Thought for N seconds``）：
-   *   1. 先尝试整段直接解析；
-   *   2. 失败则从文本中提取**最后一个** JSON 块（```json 围栏 或裸 {} / []），
-   *      只解析该块——思考过程等前缀被自然忽略；
-   *   3. 解析出的对象/数组必须含 ``tool`` 字段才认定为工具调用。
-   *
-   * 命中时，把每个元素映射为 OpenAI 规范的 tool_calls 项：
-   *   { id, type: "function", function: { name: <tool值>, arguments: <剩余参数JSON字符串> } }
-   * 其中 arguments 是「去掉 tool 字段后剩余部分」的 JSON 字符串（与 OpenAI
-   * 把 arguments 作为字符串而非对象的规范一致）。
-   *
-   * @param {string} text 待检测的文本
-   * @returns {Array<Object>|null} OpenAI 兼容的 tool_calls 列表，未命中返回 null
-   */
-  function extractToolCalls(text) {
-    if (typeof text !== 'string' || !text.trim()) {
-      return null;
-    }
-    var trimmed = text.trim();
 
-    // 1) 整段直接解析（裸 JSON 对象 / 数组）
-    var parsed = tryParseJson(trimmed);
-    if (parsed === undefined) {
-      // 2) 退化：提取最后一个 JSON 块（应对思考过程前缀），只取最后一段
-      parsed = findLastToolJson(trimmed);
-    }
-    if (parsed === undefined || parsed === null) {
-      return null;
-    }
 
-    var list = Array.isArray(parsed) ? parsed : [parsed];
-    // 必须每个元素都是含 tool 字段的对象，才认定为工具调用
-    for (var i = 0; i < list.length; i += 1) {
-      var item = list[i];
-      if (!item || typeof item !== 'object' || Array.isArray(item) || typeof item.tool !== 'string') {
-        return null;
-      }
-    }
-
-    // 映射为 OpenAI 兼容结构
-    var result = list.map(function (entry) {
-      var rest = {};
-      for (var key in entry) {
-        if (Object.prototype.hasOwnProperty.call(entry, key) && key !== 'tool') {
-          rest[key] = entry[key];
-        }
-      }
-      return {
-        id: 'call_' + randomHex(),
-        type: 'function',
-        function: {
-          name: entry.tool,
-          arguments: JSON.stringify(rest)
-        }
-      };
-    });
-    return result;
-  }
-
-  /**
-   * 从文本中提取「最后一个」可解析为含 tool 字段的 JSON 块。
-   *
-   * 依次尝试：
-   *   - 所有 ```json 围栏块，取最后一个；
-   *   - 所有裸对象/数组块（匹配最外层 {} 或 []），取最后一个。
-   * 只要其中任一能被解析为含 tool 字段的对象/数组即返回，否则返回 undefined。
-   *
-   * @param {string} text 待扫描文本
-   * @returns {any|undefined} 命中的解析结果或 undefined
-   */
-  function findLastToolJson(text) {
-    var candidates = [];
-
-    // 围栏块：```json ... ``` 或 ``` ... ```
-    var fenceRe = /```(?:json)?\s*([\s\S]*?)```/g;
-    var fm;
-    while ((fm = fenceRe.exec(text)) !== null) {
-      candidates.push(fm[1].trim());
-    }
-
-    // 裸块：从每个 { 或 [ 起，按括号配对截到匹配的 } 或 ]
-    var bare = extractBalancedBlocks(text);
-    for (var i = 0; i < bare.length; i += 1) {
-      candidates.push(bare[i]);
-    }
-
-    // 从后往前试，命中即返回
-    for (var j = candidates.length - 1; j >= 0; j -= 1) {
-      var val = tryParseJson(candidates[j]);
-      if (val === undefined || val === null) {
-        continue;
-      }
-      var list = Array.isArray(val) ? val : [val];
-      var ok = list.length > 0;
-      for (var k = 0; k < list.length; k += 1) {
-        var it = list[k];
-        if (!it || typeof it !== 'object' || Array.isArray(it) || typeof it.tool !== 'string') {
-          ok = false;
-          break;
-        }
-      }
-      if (ok) {
-        return val;
-      }
-    }
-    return undefined;
-  }
-
-  /**
-   * 提取文本中所有括号配对的 JSON 块（最外层 {} 或 []）。
-   *
-   * 用于从含思考过程的文本里捞出 JSON，不做语义校验，仅做括号配对截取。
-   *
-   * @param {string} text 待扫描文本
-   * @returns {Array<string>} 括号配对的子串列表
-   */
-  function extractBalancedBlocks(text) {
-    var out = [];
-    var stack = [];
-    var start = -1;
-    for (var i = 0; i < text.length; i += 1) {
-      var ch = text[i];
-      if (ch === '{' || ch === '[') {
-        if (stack.length === 0) {
-          start = i;
-        }
-        stack.push(ch);
-      } else if (ch === '}' || ch === ']') {
-        if (stack.length === 0) {
-          continue;
-        }
-        var open = stack.pop();
-        if ((open === '{' && ch === '}') || (open === '[' && ch === ']')) {
-          if (stack.length === 0 && start >= 0) {
-            out.push(text.slice(start, i + 1));
-          }
-        } else {
-          // 括号不匹配，丢弃当前段
-          stack.length = 0;
-          start = -1;
-        }
-      }
-    }
-    return out;
-  }
-
-  /**
-   * 生成短随机十六进制串，用于构造 tool_call id（形如 call_xxxx）。
-   * @returns {string} 16 位十六进制串
-   */
-  function randomHex() {
-    try {
-      if (window.crypto && typeof window.crypto.getRandomValues === 'function') {
-        var arr = new Uint8Array(8);
-        window.crypto.getRandomValues(arr);
-        return Array.prototype.map.call(arr, function (b) {
-          return b.toString(16).padStart(2, '0');
-        }).join('');
-      }
-    } catch (err) {
-      // 回退到 Math.random
-    }
-    return Math.random().toString(16).slice(2, 10) + Math.random().toString(16).slice(2, 10);
-  }
-
-  /**
-   * 安全解析 JSON，解析失败返回 undefined（与 null 区分）。
-   * @param {string} s 待解析文本
-   * @returns {any|undefined} 解析结果或 undefined
-   */
-  function tryParseJson(s) {
-    try {
-      return JSON.parse(s);
-    } catch (err) {
-      return undefined;
-    }
-  }
 
   // ------------------------------------------------------------------ 任务执行
 
@@ -668,16 +644,24 @@
       finishReason: finishReason
     };
 
-    var toolCalls = extractToolCalls(text);
-    if (toolCalls) {
-      // 命中工具调用约定：按 OpenAI 规范输出 tool_calls 字段，content 置空
-      payload.toolCalls = toolCalls;
-      payload.text = '';
-      report({
-        action: 'log',
-        level: 'info',
-        message: '[content] 检测到工具调用标记，已转为 tool_calls：' + JSON.stringify(toolCalls)
-      });
+    // 诊断：输出回复容器的标签/class 与命中的思考块，便于定位「答案丢失」类问题
+    try {
+      var dbgEl = current.element;
+      var dbg = 'root=' + (dbgEl ? dbgEl.tagName + '.' + (dbgEl.className || '').toString().slice(0, 50) : 'null');
+      if (dbgEl) {
+        var tb = [];
+        var da = dbgEl.querySelectorAll('*');
+        for (var di = 0; di < da.length && tb.length < 6; di += 1) {
+          if (isThinkBlock(da[di])) {
+            tb.push(da[di].tagName + '.' + (da[di].className || '').toString().slice(0, 30));
+          }
+        }
+        dbg += ' | thinkBlocks=[' + (tb.join('; ') || 'none') + ']';
+      }
+      dbg += ' | replyLen=' + text.length;
+      report({ action: 'log', level: 'debug', message: '[content][diag] ' + dbg });
+    } catch (e) {
+      // 诊断失败不影响主流程
     }
 
     report(payload);
@@ -719,32 +703,42 @@
         element = null;
       }
     }
+    // 复用本轮任务已选定的 element（深度思考块折叠时 innerText 检测不到增长，
+    // 每轮重选会抖动；选定一次后持续复用，直到容器失效）。
+    if (!element && job.element && document.body.contains(job.element) && isVisible(job.element)) {
+      element = job.element;
+    }
     if (!element) {
       element = pickResponseElement(job.snapshot);
+      job.element = element;
     }
 
-    var text = readText(element);
+    var text = readReplyText(element);
     if (text && text !== job.lastText) {
       // DOM 是累积文本，通常只需取新增部分；若发生重排则整段替换
       var delta = text.indexOf(job.lastText) === 0 ? text.slice(job.lastText.length) : text;
       job.lastText = text;
       job.lastChangeAt = now;
       job.hasContent = true;
+      job.stablePolls = 0; // 内容有变化，重置连续稳定计数
       // 注意：无论外部请求是否流式，CRX 都只攒完整结果，不在过程中上报增量区块。
       // 增量仅在 done 时随完整文本一次性回传，避免把未完成的碎片透传给请求端。
       if (delta) {
         report({ action: 'log', level: 'debug', message: '[content] 累积增量 ' + delta.length + ' 字符（暂不回传）' });
       }
+    } else if (text && text === job.lastText) {
+      // 本轮文本与上一轮一致，连续稳定计数 +1
+      job.stablePolls += 1;
+    } else {
+      // 尚无可读内容，不计入稳定
+      job.stablePolls = 0;
     }
 
-    var stableFor = now - job.lastChangeAt;
-    var waitTime = job.netDone ? CFG.stableAfterNetMs : CFG.stableDomOnlyMs;
-
-    if (job.hasContent && stableFor >= waitTime && elapsed >= CFG.startGraceMs) {
-      finishJob('stop');
-      return;
-    }
-    if (job.netDone && job.hasContent && stableFor >= CFG.stableAfterNetMs) {
+    // 结束判定：基于「连续多次轮询文本无变化」，而非绝对静默时长。
+    //   - 流式站点（已收到 net_done）：流真结束后只需较短连续稳定窗口，给 DOM 渲染留缓冲；
+    //   - 无网络信号站点：需很长连续稳定窗口，容忍深度思考的自然长停顿，避免提前截断。
+    var requiredPolls = job.netDone ? CFG.stablePollsAfterNet : CFG.stablePollsDomOnly;
+    if (job.hasContent && job.stablePolls >= requiredPolls && elapsed >= CFG.startGraceMs) {
       finishJob('stop');
       return;
     }
@@ -843,6 +837,8 @@
       lastText: '',
       hasContent: false,
       netDone: false,
+      stablePolls: 0,
+      element: null,
       signalReported: false,
       timer: null
     };

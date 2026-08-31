@@ -27,6 +27,21 @@ def _read_str(name: str, default: str) -> str:
     return value if value else default
 
 
+def _read_list(name: str, default: list[str]) -> list[str]:
+    """读取逗号分隔的列表型配置。
+
+    :param name: 环境变量名
+    :param default: 未设置或为空时使用的默认值
+    :return: 生效的配置值（去空格、过滤空项）
+    """
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return list(default)
+    items = [item.strip() for item in raw.split(",")]
+    items = [item for item in items if item]
+    return items if items else list(default)
+
+
 def _read_int(name: str, default: int, minimum: int, maximum: int) -> int:
     """读取整数型配置，并夹取到合法区间，防止非法值导致运行异常。
 
@@ -90,6 +105,7 @@ class GatewayConfig:
     queue_wait: float
     prompt_mode: str
     default_model: str
+    models: list[str]
     allow_cors_any: bool
 
     @classmethod
@@ -107,6 +123,7 @@ class GatewayConfig:
             queue_wait=_read_float("OAP_QUEUE_WAIT_SEC", 120.0, 1.0, 3600.0),
             prompt_mode=_read_str("OAP_PROMPT_MODE", "all").lower(),
             default_model=_read_str("OAP_DEFAULT_MODEL", "browser-proxy"),
+            models=_read_list("OAP_MODELS", ["browser-proxy"]),
             allow_cors_any=_read_bool("OAP_ALLOW_CORS_ANY", True),
         )
 

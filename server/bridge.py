@@ -292,6 +292,23 @@ class BrowserBridge:
         """是否存在可用的扩展连接。"""
         return self._active is not None
 
+    def active_tab_host(self) -> str:
+        """返回活动连接所在标签页的域名（host）。
+
+        当客户端未显式指定目标站点时，用扩展握手上报的活动标签页域名作为
+        默认目标，避免把前台无关页面（如视频站）误当成任务目标。
+
+        :return: 目标域名，无连接或无法解析时返回空串
+        """
+        if not self._active:
+            return ""
+        try:
+            from urllib.parse import urlparse
+
+            return urlparse(self._active.tab_url).hostname or ""
+        except Exception:
+            return ""
+
     def status(self) -> dict[str, Any]:
         """返回桥接层运行状态，供 /health 使用。"""
         conn = self._active

@@ -187,13 +187,13 @@ sequenceDiagram
 - **Chrome 扩展**（`extension/`）：Manifest V3，包含 Service Worker、Content Script、MAIN world 注入脚本、Popup 界面与图标。
 - **网络捕获双通道**：默认通过 `injected.js` 在主世界拦截 `fetch` / `XMLHttpRequest` 提供「有数据 / 流已结束」信号；若 10 秒内无任何网络信号，自动降级挂载 `chrome.debugger` 监听请求生命周期。
 - **文本真相源 = DOM**：以目标页面的可见 DOM 为唯一回答文本来源，自动定位增量最大的最深容器；用户填了响应容器选择器时以用户为准。
-- **职责边界（本项目只做透传）**：本服务**不做 agent、不注入任何提示词、不实现工具执行**。Python 网关把扩展回传的内容**原样透传**给请求端；Agent / 工具执行是客户端（如你自己的 harness）的事。
-- **工具调用标记解析（CRX 侧，流式/非流式均生效）**：当模型完整输出工具调用时，若整段回答可被整体解析为含 `tool` 字段的 JSON（裸对象 / 数组，或 ` ```json ` 围栏包裹），Content Script 会将其映射为 **OpenAI 兼容的 `tool_calls` 字段**回填，而非放在 `content` 里。映射规则：
-  - 每个 `{"tool": <name>, ...params}` → `{ id: "call_<随机>", type: "function", function: { name: <tool值>, arguments: "<剩余参数 JSON 字符串>" } }`
-  - 例：`{"tool":"shell","cmd":"ls -la"}` → `function.name="shell"`, `function.arguments='{"cmd":"ls -la"}'`（arguments 为字符串，与 OpenAI 规范一致）。
-  - 命中工具调用时 `content` 置为 `null`，`finish_reason` 设为 `"tool_calls"`，响应体形如 `message.tool_calls:[...]`，标准 OpenAI SDK 可直接读取。
-  - 非工具调用内容仍原样透传进 `content`，`finish_reason` 为 `"stop"`。
-  - 由于扩展只在模型完整输出后才回传，工具调用解析在流式与非流式场景下行为一致（流式时网关把含 `tool_calls` 的结果作为单个 SSE chunk 推送）。
+- **职责边界（本项目只做透传）**：本服务**不做 agent、不注入任何提示词、不实现工具执行**。Python 网关把扩展回传的内容**原样透传**给请求端；Agent / 工具执行是客户端的事。仓库已内置零依赖的 agents 客户端（见 `client/` 目录）。
+
+- **工具调用：CRX 原样透传，由 agents 客户端解析（流式/非流式均生效）**：模型完整输出后，Content Script **不再解析**工具格式，而是把整段回答（可能是自然语言，也可能是工具调用的 JSON）**原样透传**进 `content`，`finish_reason` 为 `"stop"`。工具调用的解析与执行下移到客户端：
+  - agents 客户端（`client/`）在每次请求时把「工具说明 + 调用约定」注入 system 提示词；
+  - 模型按约定返回 `{"tool": "<名>", "args": {...}}`（裸 JSON 文本，多个调用用 JSON 数组），agents 客户端解析后执行工具并把结果回灌上下文，循环直至最终回答；
+  - 该机制整体流程类 OpenAI function calling，但细节上依赖「提示词约定 + 文本透传」而非原生 `tool_calls` 字段。详见 `client/README.md`。
+
 
 ### 9.1 目录结构
 
@@ -214,6 +214,14 @@ OpenAI-Proxy-via-Browser/
 │   ├── injected.js          # 主世界网络嗅探
 │   ├── popup.html / popup.js / popup.css
 │   └── icons/icon{16,32,48,128}.png
+├── client/                 # agents 客户端（零依赖 Python 库 + CLI）
+│   ├── oap_client.py       # 网关 HTTP 客户端（urllib，零依赖）
+│   ├── sse.py              # SSE 流式解析
+│   ├── tools.py            # 内置工具（shell/read_file/write_file/list_dir/http_request）
+│   ├── prompts.py          # 工具说明渲染进系统提示词
+│   ├── agent.py            # 多轮对话 + 工具调用循环
+│   ├── cli.py              # 命令行交互 demo
+│   └── README.md           # 客户端使用文档
 ├── tools/make_icons.py      # 用标准库生成扩展图标
 ├── 可行性分析.md            # 原方案与难点分析
 ├── chrome扩展规范.md        # Manifest V3 规范速查

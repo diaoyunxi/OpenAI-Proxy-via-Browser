@@ -1,0 +1,9 @@
+# 本 agents 客户端为「零第三方依赖」实现，仅使用 Python 标准库
+# （urllib / json / re / subprocess 等），无需 pip install 任何包。
+#
+# 运行要求：
+#   - Python 3.8+
+#   - 本地已启动 OpenAI-Proxy 网关（server/main.py）并加载 Chrome 扩展
+#
+# 如需运行命令行 demo：
+#   python -m client.cli --host chat.openai.com

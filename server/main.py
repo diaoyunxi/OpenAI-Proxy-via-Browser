@@ -137,18 +137,17 @@ def build_prompt(request: ChatCompletionRequest) -> str:
 def resolve_target_host(request: ChatCompletionRequest, headers: Any) -> str:
     """解析目标站点域名。
 
-    优先级：请求头 ``X-OAP-Host`` > ``model`` 字段中的 ``site:<host>`` 前缀 > 空串（由扩展自行选择标签页）。
+    模型由后台网页决定，不再从 ``model`` 字段解析 ``site:`` 前缀。
+    仅支持请求头 ``X-OAP-Host`` 显式指定；未指定时返回空串，由扩展自行
+    按已知 AI 站点选择标签页。
 
-    :param request: 客户端请求体
+    :param request: 客户端请求体（未使用，保留签名以便后续扩展）
     :param headers: 请求头对象
     :return: 目标域名，可能为空串
     """
     header_host = (headers.get(HEADER_TARGET_HOST) or "").strip()
     if header_host:
         return header_host
-    model = (request.model or "").strip()
-    if model.lower().startswith("site:"):
-        return model[5:].strip()
     return ""
 
 
@@ -204,17 +203,22 @@ async def health() -> dict[str, Any]:
 
 @app.get("/v1/models")
 async def list_models() -> dict[str, Any]:
-    """返回可用模型列表（MVP 仅提供一个浏览器代理别名）。"""
+    """返回可用模型列表。
+
+    模型由后台网页决定，网关只暴露一个固定的浏览器代理别名（可被
+    ``OAP_MODELS`` 扩展），不随客户端请求动态路由。
+    """
     created = now_seconds()
     return {
         "object": "list",
         "data": [
             {
-                "id": CONFIG.default_model,
+                "id": mid,
                 "object": "model",
                 "created": created,
                 "owned_by": "openai-proxy-via-browser",
             }
+            for mid in CONFIG.models
         ],
     }
 
@@ -239,13 +243,18 @@ async def chat_completions(request: Request) -> Any:
     if not prompt.strip():
         return error_response(ERR_INVALID_REQUEST, "messages 中没有可发送的文本内容")
 
+    # 模型由后台网页决定，忽略客户端传入的 model 字段，统一回显默认别名。
+    # 保留 chat_request.model 的解析仅为满足 OpenAI 请求体校验，不参与路由。
+    model = CONFIG.default_model
+
     host = resolve_target_host(chat_request, request.headers)
+    # host 为空时交由扩展按已知 AI 站点自行选择标签页（见 background.findTargetTab），
+    # 此处不回填活动标签 host，避免把前台无关页面误当成目标。
     profile = build_profile(host)
     timeout = resolve_timeout(request.headers)
     prompt_tokens = estimate_tokens(prompt)
     completion_id = make_id()
     created = now_seconds()
-    model = chat_request.model or CONFIG.default_model
 
     def disconnect_checker() -> Any:
         return request.is_disconnected()
