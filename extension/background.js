@@ -346,7 +346,47 @@ function ensureInjected(tabId) {
 }
 
 /**
- * 确保 content script 已在目标页面运行。
+ * 探测 content script 是否已在目标页面运行。
+ *
+ * 必须探测而不能盲目注入：manifest 已声明自动注入，重复注入会让 IIFE 再执行一遍，
+ * 导致双份 Port、双份轮询，同一次请求被上报两次。
+ *
+ * @param {number} tabId 标签页 id
+ * @returns {Promise<boolean>} 已注入并响应返回 true
+ */
+function probeContentScript(tabId) {
+  return new Promise(function (resolve) {
+    var settled = false;
+    var timer = setTimeout(function () {
+      if (!settled) {
+        settled = true;
+        resolve(false);
+      }
+    }, 800);
+    try {
+      chrome.tabs.sendMessage(tabId, { action: 'ping' }, function (response) {
+        if (chrome.runtime.lastError) {
+          response = null;
+        }
+        if (settled) {
+          return;
+        }
+        settled = true;
+        clearTimeout(timer);
+        resolve(!!response);
+      });
+    } catch (err) {
+      if (!settled) {
+        settled = true;
+        clearTimeout(timer);
+        resolve(false);
+      }
+    }
+  });
+}
+
+/**
+ * 确保 content script 已在目标页面运行，必要时才注入。
  * @param {number} tabId 标签页 id
  * @returns {Promise<boolean>} 可用返回 true
  */
@@ -354,16 +394,21 @@ function ensureContentScript(tabId) {
   if (contentPorts.has(tabId)) {
     return Promise.resolve(true);
   }
-  return new Promise(function (resolve) {
-    chrome.scripting
-      .executeScript({ target: { tabId: tabId }, files: ['content.js'] })
-      .then(function () {
-        resolve(true);
-      })
-      .catch(function (err) {
-        console.warn('[oap] 注入 content script 失败：', err);
-        resolve(false);
-      });
+  return probeContentScript(tabId).then(function (alive) {
+    if (alive) {
+      return true;
+    }
+    return new Promise(function (resolve) {
+      chrome.scripting
+        .executeScript({ target: { tabId: tabId }, files: ['content.js'] })
+        .then(function () {
+          resolve(true);
+        })
+        .catch(function (err) {
+          console.warn('[oap] 注入 content script 失败：', err);
+          resolve(false);
+        });
+    });
   });
 }
 
@@ -433,12 +478,8 @@ function executeTask(options) {
       })
       .then(function (profile) {
         if (!profile.inputSelector) {
-          options.reporter({
-            type: 'error',
-            code: 'selector_missing',
-            message: '站点 ' + hostOf(tab.url || '') + ' 尚未配置输入框选择器，请在扩展弹窗中完成配置'
-          });
-          return;
+          // 不直接报错：content script 会尝试自动识别输入框，失败时才上报 selector_missing
+          console.info('[oap] 站点 ' + hostOf(tab.url || '') + ' 未配置输入框选择器，将尝试自动识别');
         }
 
         state.currentTask = {

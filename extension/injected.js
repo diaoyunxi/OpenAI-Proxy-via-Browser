@@ -30,7 +30,11 @@
     armed: false,
     urlPattern: '',
     urlRegex: null,
-    seq: 0
+    seq: 0,
+    /** 是否回传解析出的网络文本；MVP 阶段文本真相源是 DOM，默认关闭以降低开销 */
+    withText: false,
+    /** 当前流是否已上报过「有数据流动」信号，避免每个数据行都发一次消息 */
+    signalSent: false
   };
 
   /**
@@ -173,16 +177,21 @@
     if (!payload) {
       return;
     }
-    // 只要收到任意数据行，就说明响应已经开始流动
-    post({ type: 'net_signal', url: url });
+    // 「有数据流动」每条流只上报一次，避免逐 token 刷消息
+    if (!state.signalSent) {
+      state.signalSent = true;
+      post({ type: 'net_signal', url: url });
+    }
 
     if (payload === '[DONE]') {
       post({ type: 'net_done', url: url });
       return;
     }
-    var text = extractText(payload);
-    if (text) {
-      post({ type: 'net_text', url: url, text: text });
+    if (state.withText) {
+      var text = extractText(payload);
+      if (text) {
+        post({ type: 'net_text', url: url, text: text });
+      }
     }
   }
 
@@ -201,6 +210,8 @@
     }
     var decoder = new TextDecoder('utf-8');
     var buffer = '';
+    // 每条流独立统计「已上报信号」，否则第二条流起将不再上报
+    state.signalSent = false;
 
     function flushRemainder() {
       var rest = buffer.trim();
@@ -405,6 +416,7 @@
     var data = event.data;
     if (data.type === 'arm') {
       applyPattern(data.urlPattern);
+      state.withText = data.withText === true;
       state.armed = true;
     } else if (data.type === 'disarm') {
       state.armed = false;

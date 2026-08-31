@@ -146,6 +146,37 @@
   // ------------------------------------------------------------------ 输入写入
 
   /**
+   * 自动识别页面上的主输入框，作为未配置选择器时的兜底。
+   *
+   * 策略：在可见、可编辑的候选元素中，取面积最大者；面积相同时取更靠下的一个
+   * （聊天输入框通常位于页面底部）。
+   *
+   * @returns {Element|null} 命中的输入框，未找到返回 null
+   */
+  function autoDetectInput() {
+    var nodes = document.querySelectorAll('textarea, input[type="text"], [contenteditable="true"]');
+    var candidates = [];
+    for (var i = 0; i < nodes.length; i += 1) {
+      var el = nodes[i];
+      if (!isVisible(el) || el.disabled || el.readOnly) {
+        continue;
+      }
+      var rect = el.getBoundingClientRect();
+      candidates.push({ el: el, area: rect.width * rect.height, top: rect.top });
+    }
+    if (candidates.length === 0) {
+      return null;
+    }
+    candidates.sort(function (a, b) {
+      if (b.area !== a.area) {
+        return b.area - a.area;
+      }
+      return b.top - a.top;
+    });
+    return candidates[0].el;
+  }
+
+  /**
    * 沿原型链查找某个属性的原生 setter，绕过页面（如 React）对实例属性的改写。
    * @param {Element} el 目标元素
    * @param {string} prop 属性名
@@ -530,25 +561,30 @@
       report({ action: 'error', requestId: requestId, code: 'busy', message: '当前页面已有任务在执行' });
       return;
     }
-    if (!profile.inputSelector) {
-      report({
-        action: 'error',
-        requestId: requestId,
-        code: 'selector_missing',
-        message: '尚未配置该站点的输入框选择器，请在扩展弹窗中完成配置'
-      });
-      return;
-    }
-
-    var input = await waitForElement(profile.inputSelector, CFG.elementTimeoutMs);
-    if (!input) {
-      report({
-        action: 'error',
-        requestId: requestId,
-        code: 'element_timeout',
-        message: '未找到输入框元素：' + profile.inputSelector
-      });
-      return;
+    var input = null;
+    if (profile.inputSelector) {
+      input = await waitForElement(profile.inputSelector, CFG.elementTimeoutMs);
+      if (!input) {
+        report({
+          action: 'error',
+          requestId: requestId,
+          code: 'element_timeout',
+          message: '未找到输入框元素：' + profile.inputSelector
+        });
+        return;
+      }
+    } else {
+      input = autoDetectInput();
+      if (!input) {
+        report({
+          action: 'error',
+          requestId: requestId,
+          code: 'selector_missing',
+          message: '未能自动识别输入框，请在扩展弹窗中配置该站点的输入框选择器'
+        });
+        return;
+      }
+      log('未配置输入框选择器，已自动识别：' + (input.tagName || '').toLowerCase());
     }
 
     var written = await writeText(input, payload.prompt || '');
@@ -558,7 +594,12 @@
 
     // 开启网络嗅探，用于加速结束判定
     window.postMessage(
-      { __oap: 'OAP_NET_CHANNEL', type: 'arm', urlPattern: profile.responseUrlPattern || '' },
+      {
+        __oap: 'OAP_NET_CHANNEL',
+        type: 'arm',
+        urlPattern: profile.responseUrlPattern || '',
+        withText: false
+      },
       '*'
     );
     netTextLength = 0;
@@ -594,6 +635,7 @@
       lastText: '',
       hasContent: false,
       netDone: false,
+      signalReported: false,
       timer: null
     };
 
@@ -609,11 +651,19 @@
     if (!job) {
       return;
     }
-    if (data.type === 'net_signal' || data.type === 'net_text') {
+    if (data.type === 'net_text') {
+      // 网络文本在 MVP 阶段仅用于诊断统计，不作为文本源，故不上报以免产生高频消息
       if (typeof data.text === 'string') {
         netTextLength += data.text.length;
       }
-      report({ action: 'net_signal', requestId: job.requestId, length: netTextLength });
+      return;
+    }
+    if (data.type === 'net_signal') {
+      // 每个任务只上报一次：仅需让 Service Worker 知道网络通道有效，从而取消 debugger 降级
+      if (!job.signalReported) {
+        job.signalReported = true;
+        report({ action: 'net_signal', requestId: job.requestId, source: 'page' });
+      }
       return;
     }
     if (data.type === 'net_done') {
@@ -669,7 +719,12 @@
     }
   }
 
-  chrome.runtime.onMessage.addListener(function (message) {
+  chrome.runtime.onMessage.addListener(function (message, sender, sendResponse) {
+    // ping 用于 Service Worker 探测 content script 是否已注入，必须同步回执
+    if (message && message.action === 'ping') {
+      sendResponse({ ok: true, busy: job !== null });
+      return true;
+    }
     handleCommand(message);
     return false;
   });
