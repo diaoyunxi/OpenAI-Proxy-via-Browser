@@ -23,6 +23,11 @@ from .tools import get_tool_spec
 ToolCall = Tuple[str, Dict[str, Any]]
 
 _FENCE_RE = re.compile(r"```(?:json)?\s*([\s\S]*?)```", re.IGNORECASE)
+# 思考类标签（<think>/<thinking>/<reasoning> 及其闭合变体），解析前剥离以减少干扰
+_THINK_TAG_RE = re.compile(
+    r"<(think|thinking|reasoning)>\s*[\s\S]*?</\1>", re.IGNORECASE)
+# 锚定「工具调用对象」开头：以 {"tool": 起始，用于在复述提示词等杂乱文本中精准定位
+_TOOL_ANCHOR_RE = re.compile(r'\{\s*"tool"\s*:', re.IGNORECASE)
 
 
 class Agent:
@@ -46,6 +51,7 @@ class Agent:
     # ---- 对外 API ----
     def run(self, user_input: str, verbose: bool = False) -> str:
         """执行一轮 agent 对话，返回最终自然语言回答。"""
+        self._format_retried = False  # 工具调用格式纠正重试标志，每次对话重置
         self.history.append({"role": "user", "content": user_input})
         for step in range(1, self.max_iterations + 1):
             messages = self._build_messages()
@@ -61,7 +67,24 @@ class Agent:
 
             calls = parse_tool_calls(content)
             if not calls:
-                # 没有工具调用 → 视为最终回答
+                if _looks_like_tool_call(content):
+                    if self._format_retried:
+                        # 已纠正重试一次仍无法解析，给出友好提示，
+                        # 不再把含系统提示词的原始回复原样回显给用户
+                        return ("⚠️ 模型返回了疑似工具调用，但无法按约定格式解析执行。"
+                                "请确认工具调用为：{\"tool\": \"<工具名>\", \"args\": {<参数字典>}}"
+                                "（可放在 ```json 围栏内，且不要复述系统提示词）。")
+                    # 首次疑似格式不符：回灌纠正提示，最多重试一次
+                    self._format_retried = True
+                    self.history.append({
+                        "role": "user",
+                        "content": "你返回的内容疑似工具调用，但不符合约定格式，无法解析执行。"
+                                   "请严格只输出如下 JSON（可放在 ```json 围栏内），"
+                                   "不要输出额外解释文字、也不要复述系统提示词：\n"
+                                   '{"tool": "<工具名>", "args": {<参数字典>}}'
+                    })
+                    continue
+                # 确属普通自然语言回答 → 直接返回
                 return content
 
             if verbose:
@@ -135,6 +158,48 @@ def _extract_balanced(text: str) -> List[str]:
     return out
 
 
+def _extract_tool_objects(text: str) -> List[str]:
+    """从文本中锚定 ``"tool"`` 键，精准提取工具调用 JSON 对象。
+
+    应对模型复述系统提示词（含大量工具说明 JSON）时，全局括号配对会跨块、
+    导致提取失败的问题：本函数只从 ``{"tool":`` 起始处做括号配对，忽略前置噪声。
+    """
+    out: List[str] = []
+    for m in _TOOL_ANCHOR_RE.finditer(text):
+        start = m.start()          # 即左花括号位置
+        depth = 0
+        in_str = False
+        esc = False
+        end = -1
+        for i in range(start, len(text)):
+            ch = text[i]
+            if in_str:
+                if esc:
+                    esc = False
+                elif ch == "\\":
+                    esc = True
+                elif ch == '"':
+                    in_str = False
+                continue
+            if ch == '"':
+                in_str = True
+            elif ch in "{[":
+                depth += 1
+            elif ch in "}]":
+                depth -= 1
+                if depth == 0:
+                    end = i
+                    break
+        if end > start:
+            out.append(text[start:end + 1])
+    return out
+
+
+def _looks_like_tool_call(text: str) -> bool:
+    """判断文本是否疑似包含工具调用（用于解析失败时的友好兜底/重试）。"""
+    return bool(_TOOL_ANCHOR_RE.search(text))
+
+
 def _safe_json(s: str):
     try:
         return json.loads(s)
@@ -152,14 +217,27 @@ def parse_tool_calls(text: str) -> List[ToolCall]:
     if not text:
         return []
 
+    # 解析前先剥离思考类标签，避免思考文字里的括号干扰括号配对
+    cleaned = _THINK_TAG_RE.sub("", text).strip()
+
     candidates: List[str] = []
-    for m in _FENCE_RE.finditer(text):
+    for m in _FENCE_RE.finditer(cleaned):
         candidates.append(m.group(1).strip())
-    candidates.extend(_extract_balanced(text))
-    candidates.append(text)  # 整段兜底
+    # 锚定 "tool" 键精准提取（优先级高，能绕过复述的提示词噪声）
+    candidates.extend(_extract_tool_objects(cleaned))
+    candidates.extend(_extract_balanced(cleaned))
+    candidates.append(cleaned)  # 整段兜底
+
+    # 去重并保持顺序
+    seen: set = set()
+    uniq: List[str] = []
+    for c in candidates:
+        if c and c not in seen:
+            seen.add(c)
+            uniq.append(c)
 
     # 从后往前试，命中即返回（兼容思考前缀场景）
-    for raw in reversed(candidates):
+    for raw in reversed(uniq):
         parsed = _safe_json(raw)
         if parsed is None:
             continue

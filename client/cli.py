@@ -128,7 +128,8 @@ def main(argv: List[str] = None) -> int:
         except OAPError as e:
             print(_paint(C_RED, "[错误]") + f" {e}")
             continue
-        print(f"\n{_paint(C_GREEN, '助手>')} {_paint_think(answer)}")
+        color = C_RED if answer.startswith("⚠️") else C_GREEN
+        print(f"\n{_paint(color, '助手>')} {_paint_think(answer)}")
 
 
 if __name__ == "__main__":
