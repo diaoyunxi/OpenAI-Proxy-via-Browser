@@ -1,0 +1,190 @@
+/* popup.css —— 扩展弹窗样式（浅色主题，紧凑布局） */
+
+:root {
+  --color-bg: #f7f8fa;
+  --color-card: #ffffff;
+  --color-border: #e3e6ea;
+  --color-text: #1f2329;
+  --color-muted: #6b7280;
+  --color-primary: #2563eb;
+  --color-primary-hover: #1d4ed8;
+  --color-success: #16a34a;
+  --color-danger: #dc2626;
+  --radius: 8px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  width: 380px;
+  margin: 0;
+  padding: 12px;
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.header h1 {
+  margin: 0 0 6px;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.status-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 10px;
+  color: var(--color-muted);
+}
+
+.dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  display: inline-block;
+  flex: 0 0 auto;
+}
+
+.dot-on {
+  background: var(--color-success);
+  box-shadow: 0 0 0 3px rgba(22, 163, 74, 0.18);
+}
+
+.dot-off {
+  background: var(--color-danger);
+  box-shadow: 0 0 0 3px rgba(220, 38, 38, 0.18);
+}
+
+.dot-wait {
+  background: #f59e0b;
+  box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.18);
+}
+
+.card {
+  background: var(--color-card);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  margin-bottom: 10px;
+}
+
+.card h2 {
+  margin: 0 0 8px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.badge {
+  display: inline-block;
+  margin-left: 4px;
+  padding: 1px 6px;
+  border-radius: 10px;
+  background: #eef2ff;
+  color: var(--color-primary);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.tip {
+  margin: 0 0 8px;
+  color: var(--color-muted);
+  font-size: 12px;
+}
+
+.field {
+  display: block;
+  margin-bottom: 8px;
+}
+
+.field > span {
+  display: block;
+  margin-bottom: 3px;
+  color: var(--color-muted);
+  font-size: 12px;
+}
+
+.required {
+  color: var(--color-danger);
+  font-style: normal;
+}
+
+input[type="text"] {
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  font-size: 13px;
+  font-family: ui-monospace, Consolas, monospace;
+  outline: none;
+}
+
+input[type="text"]:focus {
+  border-color: var(--color-primary);
+}
+
+.inline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.inline input[type="text"] {
+  flex: 1 1 auto;
+}
+
+.btn {
+  padding: 6px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: #ffffff;
+  color: var(--color-text);
+  font-size: 13px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.btn:hover {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+}
+
+.btn-primary {
+  background: var(--color-primary);
+  border-color: var(--color-primary);
+  color: #ffffff;
+}
+
+.btn-primary:hover {
+  background: var(--color-primary-hover);
+  border-color: var(--color-primary-hover);
+  color: #ffffff;
+}
+
+.hint {
+  color: var(--color-muted);
+  font-size: 12px;
+}
+
+.output {
+  margin: 8px 0 0;
+  padding: 8px;
+  max-height: 160px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: #f3f4f6;
+  border-radius: 6px;
+  font-size: 12px;
+  font-family: ui-monospace, Consolas, monospace;
+}
+
+.footer {
+  color: var(--color-muted);
+  font-size: 11px;
+  text-align: right;
+}

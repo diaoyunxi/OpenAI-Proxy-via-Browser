@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>OpenAI Proxy via Browser</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <header class="header">
+      <h1>OpenAI Proxy via Browser</h1>
+      <div class="status-row">
+        <span id="status-dot" class="dot dot-off"></span>
+        <span id="status-text">正在检测…</span>
+      </div>
+    </header>
+
+    <section class="card">
+      <h2>网关设置</h2>
+      <label class="field">
+        <span>WebSocket 地址</span>
+        <div class="inline">
+          <input id="gateway-url" type="text" placeholder="ws://127.0.0.1:8080/ws" />
+          <button id="btn-save-gateway" class="btn btn-primary">保存</button>
+        </div>
+      </label>
+      <div class="inline">
+        <button id="btn-test-conn" class="btn">测试网关</button>
+        <span id="conn-result" class="hint"></span>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>站点配置 <span id="current-host" class="badge">未识别</span></h2>
+      <p class="tip">选择器可通过 Chrome DevTools 复制获得；响应容器留空时将自动探测。</p>
+
+      <label class="field">
+        <span>输入框选择器 <em class="required">*</em></span>
+        <input id="input-selector" type="text" placeholder="例如：#chat-input 或 textarea" />
+      </label>
+
+      <label class="field">
+        <span>发送按钮选择器</span>
+        <input id="send-selector" type="text" placeholder="留空则对输入框模拟回车" />
+      </label>
+
+      <label class="field">
+        <span>响应容器选择器</span>
+        <input id="response-selector" type="text" placeholder="留空则自动探测" />
+      </label>
+
+      <label class="field">
+        <span>响应请求 URL 匹配</span>
+        <input id="url-pattern" type="text" placeholder="留空则按关键词自动匹配，可填正则" />
+      </label>
+
+      <button id="btn-save-profile" class="btn btn-primary">保存当前站点配置</button>
+      <span id="save-result" class="hint"></span>
+    </section>
+
+    <section class="card">
+      <h2>联调测试</h2>
+      <label class="field">
+        <span>测试文本</span>
+        <input id="test-text" type="text" value="你好，请只回复“连接成功”四个字。" />
+      </label>
+      <div class="inline">
+        <button id="btn-test-run" class="btn btn-primary">发送测试</button>
+        <span id="test-state" class="hint"></span>
+      </div>
+      <pre id="test-output" class="output">（结果将显示在这里）</pre>
+    </section>
+
+    <footer class="footer">
+      <span id="version-text"></span>
+    </footer>
+
+    <script src="popup.js"></script>
+  </body>
+</html>

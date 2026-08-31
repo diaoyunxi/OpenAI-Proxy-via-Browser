@@ -174,4 +174,124 @@ sequenceDiagram
 - **更智能的选择器**：基于 AI 自动识别输入框和按钮，减少用户配置。
 - **日志与监控**：添加请求日志、性能监控界面。
 
+---
+
+## 9. 当前实现状态（0.1.0 MVP）
+
+仓库已包含可运行的最小可行实现：
+
+- **Python 网关**（`server/`）：FastAPI 应用，OpenAI 兼容的 `POST /v1/chat/completions`（流式 + 非流式）、`GET /v1/models`、`GET /health`、WebSocket 端点 `WS /ws`。
+- **Chrome 扩展**（`extension/`）：Manifest V3，包含 Service Worker、Content Script、MAIN world 注入脚本、Popup 界面与图标。
+- **网络捕获双通道**：默认通过 `injected.js` 在主世界拦截 `fetch` / `XMLHttpRequest` 提供「有数据 / 流已结束」信号；若 10 秒内无任何网络信号，自动降级挂载 `chrome.debugger` 监听请求生命周期。
+- **文本真相源 = DOM**：以目标页面的可见 DOM 为唯一回答文本来源，自动定位增量最大的最深容器；用户填了响应容器选择器时以用户为准。
+
+### 9.1 目录结构
+
+```
+OpenAI-Proxy-via-Browser/
+├── server/                  # Python 网关
+│   ├── main.py              # FastAPI 入口（HTTP + WebSocket 端点）
+│   ├── bridge.py            # 浏览器桥接层：WS 连接池、任务会话、超时控制
+│   ├── openai_compat.py     # OpenAI 兼容响应与 SSE 帧构造
+│   ├── protocol.py          # 网关↔扩展消息协议与错误码
+│   ├── schemas.py           # 请求体 Pydantic 模型
+│   ├── config.py            # 环境变量驱动的运行时配置
+│   └── requirements.txt
+├── extension/               # Chrome 扩展
+│   ├── manifest.json
+│   ├── background.js        # Service Worker：WS 客户端、任务派发、debugger 降级
+│   ├── content.js           # DOM 自动化与响应容器自动探测
+│   ├── injected.js          # 主世界网络嗅探
+│   ├── popup.html / popup.js / popup.css
+│   └── icons/icon{16,32,48,128}.png
+├── tools/make_icons.py      # 用标准库生成扩展图标
+├── 可行性分析.md            # 原方案与难点分析
+├── chrome扩展规范.md        # Manifest V3 规范速查
+└── README.md
+```
+
+### 9.2 运行步骤
+
+#### 启动网关
+
+```bash
+cd server
+python -m pip install -r requirements.txt
+python main.py            # 默认监听 0.0.0.0:8080
+```
+
+可用的环境变量（不填则取默认值）：
+
+| 变量 | 默认值 | 含义 |
+| --- | --- | --- |
+| `OAP_HOST` | `0.0.0.0` | HTTP 监听地址 |
+| `OAP_PORT` | `8080` | HTTP 监听端口 |
+| `OAP_HEARTBEAT_SEC` | `15` | 网关主动 ping 扩展的周期（秒） |
+| `OAP_HELLO_TIMEOUT_SEC` | `10` | 等待扩展握手消息的超时（秒） |
+| `OAP_REQUEST_TIMEOUT_SEC` | `180` | 单次请求总超时（秒） |
+| `OAP_QUEUE_WAIT_SEC` | `120` | 浏览器正忙时的最长排队时间（秒） |
+| `OAP_PROMPT_MODE` | `all` | `all` 拼接全部 messages；`last_user` 只取最后一条用户消息 |
+| `OAP_DEFAULT_MODEL` | `browser-proxy` | 回显给客户端的模型名 |
+| `OAP_ALLOW_CORS_ANY` | `true` | 是否启用 `Access-Control-Allow-Origin: *` |
+
+#### 安装 Chrome 扩展
+
+1. 打开 `chrome://extensions/`，开启右上角「开发者模式」。
+2. 点击「加载已解压的扩展程序」，选择本仓库的 `extension/` 目录。
+3. 加载完成后，扩展会自动尝试连接 `ws://127.0.0.1:8080/ws`。
+
+#### 第一次为某个站点配选择器
+
+1. 打开目标 AI 网站（如 `https://chat.deepseek.com`），确认页面可用。
+2. 点击扩展图标打开弹窗。
+3. 把 `https://chat.deepseek.com` 设为活动标签页（弹窗会自动识别当前域名）。
+4. 在 DevTools 中找到输入框和发送按钮，复制它们的 CSS 选择器，填入弹窗。
+5. 「响应容器选择器」「响应请求 URL 匹配」可留空（走自动探测 / 关键词匹配）。
+6. 点击「保存当前站点配置」，再点击「发送测试」即可。
+
+> 由于 extension 已声明 `"host_permissions": ["https://*/*"]`，首次加载会弹出全局站点权限警告，同意即可。
+
+### 9.3 接口约定
+
+- `POST /v1/chat/completions`：完全兼容 OpenAI Chat Completions 协议，支持 `stream=true/false`。
+- `GET /v1/models`：返回当前可用的模型别名列表。
+- `GET /health`：返回网关与浏览器连接状态（便于调试）。
+- `WS /ws`：扩展客户端 WebSocket 入口，握手消息为 `{"v":1,"type":"hello","client_id":"…"}`，之后由网关下发 `execute` 指令。
+- `POST /v1/cancel/{request_id}`：向扩展下发取消指令（尽力而为）。
+
+请求级额外头：
+
+| 头 | 用途 |
+| --- | --- |
+| `X-OAP-Host: chat.deepseek.com` | 指定目标站点域名；不指定时由扩展选择当前活动标签页 |
+| `X-OAP-Timeout: 300` | 覆盖单次请求的总超时（秒），范围 5~3600 |
+
+### 9.4 命令行联调
+
+非流式：
+
+```bash
+curl -X POST http://127.0.0.1:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "X-OAP-Host: chat.deepseek.com" \
+  -d '{"model":"browser-proxy","messages":[{"role":"user","content":"你好"}]}'
+```
+
+流式：
+
+```bash
+curl -N -X POST http://127.0.0.1:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "X-OAP-Host: chat.deepseek.com" \
+  -d '{"model":"browser-proxy","stream":true,"messages":[{"role":"user","content":"讲个笑话"}]}'
+```
+
+### 9.5 已知限制（MVP 阶段）
+
+- **MV3 Service Worker 会被回收**：纯 WebSocket 方案存在 30~60 秒不可用窗口，已通过 `chrome.alarms` 兜底 + Popup / Content Script 持久连接保活；长期稳定使用建议改用 Native Messaging（后续版本）。
+- **单标签页串行**：一次只执行一个任务，新请求会按到达顺序排队，排队时间受 `OAP_QUEUE_WAIT_SEC` 限制。
+- **文本源仅 DOM**：网络通道仅用于结束判定；如需做严格的 token 级流式（如打字机效果 + 复制按钮），后续可启用 `textSource: 'network'` 并为每个站点配置 JSON 提取路径。
+- **`chrome.debugger` 警告横幅**：仅在降级路径下出现，会占用浏览器顶部一行（无法通过 API 抑制，只能在启动浏览器时加 `--silent-debugger-extension-api`）。
+- **响应容器自动探测是启发式**：极端页面结构下可能选错容器，建议在弹窗里手动指定。
+
 # 仅供学习，请勿用于商业用途，出事概不负责
