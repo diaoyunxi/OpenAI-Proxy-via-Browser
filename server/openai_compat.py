@@ -71,6 +71,7 @@ def completion_payload(
     finish_reason: str = "stop",
     prompt_tokens: int = 0,
     completion_tokens: int | None = None,
+    tool_calls: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """构造非流式响应体（object = chat.completion）。
 
@@ -81,8 +82,17 @@ def completion_payload(
     :param finish_reason: 结束原因，如 stop / length
     :param prompt_tokens: 输入 token 估算值
     :param completion_tokens: 输出 token 估算值，为 None 时按 content 估算
+    :param tool_calls: OpenAI 兼容的工具调用列表；非空时 content 置为 None
     :return: OpenAI 兼容的响应字典
     """
+    message: dict[str, Any] = {"role": "assistant"}
+    if tool_calls:
+        # OpenAI 规范：存在 tool_calls 时 content 为 null
+        message["content"] = None
+        message["tool_calls"] = tool_calls
+    else:
+        message["content"] = content
+
     used_completion = estimate_tokens(content) if completion_tokens is None else completion_tokens
     return {
         "id": completion_id,
@@ -92,7 +102,7 @@ def completion_payload(
         "choices": [
             {
                 "index": 0,
-                "message": {"role": "assistant", "content": content},
+                "message": message,
                 "logprobs": None,
                 "finish_reason": finish_reason,
             }

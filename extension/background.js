@@ -603,6 +603,8 @@ function onContentMessage(message, tabId) {
       }
       return;
     case 'chunk':
+      // CRX 已改为「攒完整结果后一次性回传」，正常不会收到增量块。
+      // 此处仅作防御性处理：标记网络活动，不再向网关转发增量。
       if (task.requestId !== message.requestId) {
         return;
       }
@@ -611,8 +613,6 @@ function onContentMessage(message, tabId) {
         clearTimeout(task.netTimer);
         task.netTimer = null;
       }
-      task.chunks.push(message.text || '');
-      task.reporter({ type: 'chunk', text: message.text || '' });
       return;
     case 'done':
       if (task.requestId !== message.requestId) {

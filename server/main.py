@@ -267,8 +267,9 @@ async def chat_completions(request: Request) -> Any:
                 completion_id=completion_id,
                 created=created,
                 content=handle.text,
-                finish_reason=handle.finish_reason,
+                finish_reason=handle.finish_reason if not handle.tool_calls else "tool_calls",
                 prompt_tokens=prompt_tokens,
+                tool_calls=handle.tool_calls,
             )
         )
     except ClientDisconnectedError:
@@ -342,17 +343,57 @@ async def stream_response(
 
                 if item is None:  # 结束哨兵
                     break
+                # CRX 已改为攒完整结果后一次性回传，正常不会收到增量块；
+                # 若仍有增量（防御性），逐块透传。
                 yield sse_frame(chunk_payload(model=model, completion_id=completion_id, created=created, content=item))
 
             # 任务失败（超时 / 断连 / 浏览器报错）时在此抛出，由下方转换成流内错误帧
             await waiter
+
+            # CRX 不在过程中回传增量，此处把完整结果作为单个 delta 一次性发出。
+            # 若命中工具调用，则按 OpenAI 规范发出 tool_calls（content 为 null）。
+            if handle.tool_calls:
+                yield sse_frame(
+                    chunk_payload(
+                        model=model,
+                        completion_id=completion_id,
+                        created=created,
+                        with_role=True,
+                    )
+                )
+                yield sse_frame(
+                    {
+                        "id": completion_id,
+                        "object": "chat.completion.chunk",
+                        "created": created,
+                        "model": model,
+                        "choices": [
+                            {
+                                "index": 0,
+                                "delta": {"tool_calls": handle.tool_calls},
+                                "logprobs": None,
+                                "finish_reason": "tool_calls",
+                            }
+                        ],
+                        "system_fingerprint": "fp_browser_proxy",
+                    }
+                )
+            elif handle.text:
+                yield sse_frame(
+                    chunk_payload(
+                        model=model,
+                        completion_id=completion_id,
+                        created=created,
+                        content=handle.text,
+                    )
+                )
 
             yield sse_frame(
                 chunk_payload(
                     model=model,
                     completion_id=completion_id,
                     created=created,
-                    finish_reason=handle.finish_reason,
+                    finish_reason=handle.finish_reason if not handle.tool_calls else "tool_calls",
                 )
             )
             yield SSE_DONE

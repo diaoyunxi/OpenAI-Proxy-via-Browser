@@ -453,6 +453,109 @@
     return list[0].el;
   }
 
+  // ---------------------------------------------------- 工具调用标记解析
+
+  /**
+   * 判断一段文本是否为模型输出的「工具调用」结构化数据，并映射为 OpenAI 兼容结构。
+   *
+   * 约定（JSON 块约定）：模型在一次输出中仅表达工具调用时，会把内容写成
+   * 一个 JSON 对象或 JSON 数组，例如：
+   *   {"tool":"shell","cmd":"ls -la"}
+   *   [{"tool":"read","path":"/etc/hosts"}, {"tool":"shell","cmd":"pwd"}]
+   * 也支持用 ```json 围栏包裹的写法。
+   *
+   * 策略：仅当「整段文本」去掉首尾空白后能被整体 JSON.parse，且解析结果含
+   * ``tool`` 字段时才视为工具调用。这样日常聊天回答里偶然出现的 JSON 代码
+   * 块（不是顶格整段）不会被误伤。
+   *
+   * 命中时，把每个元素映射为 OpenAI 规范的 tool_calls 项：
+   *   { id, type: "function", function: { name: <tool值>, arguments: <剩余参数JSON字符串> } }
+   * 其中 arguments 是「去掉 tool 字段后剩余部分」的 JSON 字符串（与 OpenAI
+   * 把 arguments 作为字符串而非对象的规范一致）。
+   *
+   * @param {string} text 待检测的文本
+   * @returns {Array<Object>|null} OpenAI 兼容的 tool_calls 列表，未命中返回 null
+   */
+  function extractToolCalls(text) {
+    if (typeof text !== 'string' || !text.trim()) {
+      return null;
+    }
+    var trimmed = text.trim();
+
+    // 先尝试整段直接解析（裸 JSON 对象 / 数组）
+    var parsed = tryParseJson(trimmed);
+    if (parsed === undefined) {
+      // 退化到提取 ```json 围栏内的内容
+      var fenceMatch = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/);
+      if (fenceMatch) {
+        parsed = tryParseJson(fenceMatch[1].trim());
+      }
+    }
+    if (parsed === undefined || parsed === null) {
+      return null;
+    }
+
+    var list = Array.isArray(parsed) ? parsed : [parsed];
+    // 必须每个元素都是含 tool 字段的对象，才认定为工具调用
+    for (var i = 0; i < list.length; i += 1) {
+      var item = list[i];
+      if (!item || typeof item !== 'object' || Array.isArray(item) || typeof item.tool !== 'string') {
+        return null;
+      }
+    }
+
+    // 映射为 OpenAI 兼容结构
+    var result = list.map(function (entry) {
+      var rest = {};
+      for (var key in entry) {
+        if (Object.prototype.hasOwnProperty.call(entry, key) && key !== 'tool') {
+          rest[key] = entry[key];
+        }
+      }
+      return {
+        id: 'call_' + randomHex(),
+        type: 'function',
+        function: {
+          name: entry.tool,
+          arguments: JSON.stringify(rest)
+        }
+      };
+    });
+    return result;
+  }
+
+  /**
+   * 生成短随机十六进制串，用于构造 tool_call id（形如 call_xxxx）。
+   * @returns {string} 16 位十六进制串
+   */
+  function randomHex() {
+    try {
+      if (window.crypto && typeof window.crypto.getRandomValues === 'function') {
+        var arr = new Uint8Array(8);
+        window.crypto.getRandomValues(arr);
+        return Array.prototype.map.call(arr, function (b) {
+          return b.toString(16).padStart(2, '0');
+        }).join('');
+      }
+    } catch (err) {
+      // 回退到 Math.random
+    }
+    return Math.random().toString(16).slice(2, 10) + Math.random().toString(16).slice(2, 10);
+  }
+
+  /**
+   * 安全解析 JSON，解析失败返回 undefined（与 null 区分）。
+   * @param {string} s 待解析文本
+   * @returns {any|undefined} 解析结果或 undefined
+   */
+  function tryParseJson(s) {
+    try {
+      return JSON.parse(s);
+    } catch (err) {
+      return undefined;
+    }
+  }
+
   // ------------------------------------------------------------------ 任务执行
 
   /**
@@ -469,12 +572,28 @@
       clearInterval(current.timer);
     }
     window.postMessage({ __oap: 'OAP_NET_CHANNEL', type: 'disarm' }, '*');
-    report({
+
+    var text = current.lastText;
+    var payload = {
       action: 'done',
       requestId: current.requestId,
-      text: current.lastText,
+      text: text,
       finishReason: finishReason
-    });
+    };
+
+    var toolCalls = extractToolCalls(text);
+    if (toolCalls) {
+      // 命中工具调用约定：按 OpenAI 规范输出 tool_calls 字段，content 置空
+      payload.toolCalls = toolCalls;
+      payload.text = '';
+      report({
+        action: 'log',
+        level: 'info',
+        message: '[content] 检测到工具调用标记，已转为 tool_calls：' + JSON.stringify(toolCalls)
+      });
+    }
+
+    report(payload);
   }
 
   /**
@@ -524,8 +643,10 @@
       job.lastText = text;
       job.lastChangeAt = now;
       job.hasContent = true;
+      // 注意：无论外部请求是否流式，CRX 都只攒完整结果，不在过程中上报增量区块。
+      // 增量仅在 done 时随完整文本一次性回传，避免把未完成的碎片透传给请求端。
       if (delta) {
-        report({ action: 'chunk', requestId: job.requestId, text: delta });
+        report({ action: 'log', level: 'debug', message: '[content] 累积增量 ' + delta.length + ' 字符（暂不回传）' });
       }
     }
 

@@ -52,8 +52,9 @@
 - **内部逻辑**：
   - 维护一个全局 WebSocket 连接池（通常只有一个扩展实例，但可扩展）。
   - 收到外部请求后，生成唯一 `request_id`，通过 WS 发送给扩展（附带待填充文本和操作选择器信息）。
-  - 等待扩展通过 WS 返回流式数据块，每收到一块即立即通过 SSE 转发给客户端。
-  - 若 `stream=false`，则收集所有块拼接后返回完整 JSON。
+  - 扩展在目标页面上填字、点击发送，并持续读取回答 DOM，直到判定回答结束。
+  - **无论外部请求是否声明 `stream`**，扩展都只在模型完整输出后，把最终结果（纯文本或工具调用）一次性回传网关；网关再据此构造响应。
+  - 若 `stream=true`，网关把完整结果作为单个 SSE chunk 一次性推送（OpenAI 流式允许只发一个 chunk）；若 `stream=false`，直接返回完整 JSON。
 - **配置**：默认监听 `0.0.0.0:8080`，可通过环境变量修改。
 
 ### 3.2 Chrome 扩展程序
@@ -135,8 +136,10 @@ sequenceDiagram
 1. **Python 服务**：
    ```bash
    pip install fastapi uvicorn websockets
+   cd server
    uvicorn main:app --host 0.0.0.0 --port 8080
    ```
+   > 注意：网关源码使用裸模块导入（`from bridge import ...`），必须在 `server/` 目录下启动；若在其它目录启动会报 `No module named 'bridge'`。
 
 2. **Chrome 扩展**：
    - 将扩展文件夹加载为“已解压的扩展程序”（开发者模式）。
@@ -184,6 +187,13 @@ sequenceDiagram
 - **Chrome 扩展**（`extension/`）：Manifest V3，包含 Service Worker、Content Script、MAIN world 注入脚本、Popup 界面与图标。
 - **网络捕获双通道**：默认通过 `injected.js` 在主世界拦截 `fetch` / `XMLHttpRequest` 提供「有数据 / 流已结束」信号；若 10 秒内无任何网络信号，自动降级挂载 `chrome.debugger` 监听请求生命周期。
 - **文本真相源 = DOM**：以目标页面的可见 DOM 为唯一回答文本来源，自动定位增量最大的最深容器；用户填了响应容器选择器时以用户为准。
+- **职责边界（本项目只做透传）**：本服务**不做 agent、不注入任何提示词、不实现工具执行**。Python 网关把扩展回传的内容**原样透传**给请求端；Agent / 工具执行是客户端（如你自己的 harness）的事。
+- **工具调用标记解析（CRX 侧，流式/非流式均生效）**：当模型完整输出工具调用时，若整段回答可被整体解析为含 `tool` 字段的 JSON（裸对象 / 数组，或 ` ```json ` 围栏包裹），Content Script 会将其映射为 **OpenAI 兼容的 `tool_calls` 字段**回填，而非放在 `content` 里。映射规则：
+  - 每个 `{"tool": <name>, ...params}` → `{ id: "call_<随机>", type: "function", function: { name: <tool值>, arguments: "<剩余参数 JSON 字符串>" } }`
+  - 例：`{"tool":"shell","cmd":"ls -la"}` → `function.name="shell"`, `function.arguments='{"cmd":"ls -la"}'`（arguments 为字符串，与 OpenAI 规范一致）。
+  - 命中工具调用时 `content` 置为 `null`，`finish_reason` 设为 `"tool_calls"`，响应体形如 `message.tool_calls:[...]`，标准 OpenAI SDK 可直接读取。
+  - 非工具调用内容仍原样透传进 `content`，`finish_reason` 为 `"stop"`。
+  - 由于扩展只在模型完整输出后才回传，工具调用解析在流式与非流式场景下行为一致（流式时网关把含 `tool_calls` 的结果作为单个 SSE chunk 推送）。
 
 ### 9.1 目录结构
 

@@ -94,6 +94,7 @@ class TaskHandle:
     chunks: list[str] = field(default_factory=list)
     text: str = ""
     finish_reason: str = "stop"
+    tool_calls: list[dict[str, Any]] | None = None
     error_code: str | None = None
     error_message: str | None = None
     accepted: bool = False
@@ -347,6 +348,9 @@ class BrowserBridge:
         if msg_type == C2G_DONE:
             text = message.get("text")
             reason = str(message.get("finish_reason") or "stop")
+            tool_calls = message.get("tool_calls")
+            if isinstance(tool_calls, list):
+                handle.tool_calls = tool_calls
             handle.finish(text if isinstance(text, str) else None, reason)
             return
         if msg_type == C2G_ERROR:
