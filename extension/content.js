@@ -458,15 +458,18 @@
   /**
    * 判断一段文本是否为模型输出的「工具调用」结构化数据，并映射为 OpenAI 兼容结构。
    *
-   * 约定（JSON 块约定）：模型在一次输出中仅表达工具调用时，会把内容写成
-   * 一个 JSON 对象或 JSON 数组，例如：
+   * 约定（JSON 块约定）：模型在表达工具调用时，把内容写成一个 JSON 对象或
+   * JSON 数组，例如：
    *   {"tool":"shell","cmd":"ls -la"}
    *   [{"tool":"read","path":"/etc/hosts"}, {"tool":"shell","cmd":"pwd"}]
    * 也支持用 ```json 围栏包裹的写法。
    *
-   * 策略：仅当「整段文本」去掉首尾空白后能被整体 JSON.parse，且解析结果含
-   * ``tool`` 字段时才视为工具调用。这样日常聊天回答里偶然出现的 JSON 代码
-   * 块（不是顶格整段）不会被误伤。
+   * 策略（兼容浏览器模型常见的「思考过程」前缀，如 DeepSeek 的
+   * ``Thought for N seconds``）：
+   *   1. 先尝试整段直接解析；
+   *   2. 失败则从文本中提取**最后一个** JSON 块（```json 围栏 或裸 {} / []），
+   *      只解析该块——思考过程等前缀被自然忽略；
+   *   3. 解析出的对象/数组必须含 ``tool`` 字段才认定为工具调用。
    *
    * 命中时，把每个元素映射为 OpenAI 规范的 tool_calls 项：
    *   { id, type: "function", function: { name: <tool值>, arguments: <剩余参数JSON字符串> } }
@@ -482,14 +485,11 @@
     }
     var trimmed = text.trim();
 
-    // 先尝试整段直接解析（裸 JSON 对象 / 数组）
+    // 1) 整段直接解析（裸 JSON 对象 / 数组）
     var parsed = tryParseJson(trimmed);
     if (parsed === undefined) {
-      // 退化到提取 ```json 围栏内的内容
-      var fenceMatch = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/);
-      if (fenceMatch) {
-        parsed = tryParseJson(fenceMatch[1].trim());
-      }
+      // 2) 退化：提取最后一个 JSON 块（应对思考过程前缀），只取最后一段
+      parsed = findLastToolJson(trimmed);
     }
     if (parsed === undefined || parsed === null) {
       return null;
@@ -522,6 +522,93 @@
       };
     });
     return result;
+  }
+
+  /**
+   * 从文本中提取「最后一个」可解析为含 tool 字段的 JSON 块。
+   *
+   * 依次尝试：
+   *   - 所有 ```json 围栏块，取最后一个；
+   *   - 所有裸对象/数组块（匹配最外层 {} 或 []），取最后一个。
+   * 只要其中任一能被解析为含 tool 字段的对象/数组即返回，否则返回 undefined。
+   *
+   * @param {string} text 待扫描文本
+   * @returns {any|undefined} 命中的解析结果或 undefined
+   */
+  function findLastToolJson(text) {
+    var candidates = [];
+
+    // 围栏块：```json ... ``` 或 ``` ... ```
+    var fenceRe = /```(?:json)?\s*([\s\S]*?)```/g;
+    var fm;
+    while ((fm = fenceRe.exec(text)) !== null) {
+      candidates.push(fm[1].trim());
+    }
+
+    // 裸块：从每个 { 或 [ 起，按括号配对截到匹配的 } 或 ]
+    var bare = extractBalancedBlocks(text);
+    for (var i = 0; i < bare.length; i += 1) {
+      candidates.push(bare[i]);
+    }
+
+    // 从后往前试，命中即返回
+    for (var j = candidates.length - 1; j >= 0; j -= 1) {
+      var val = tryParseJson(candidates[j]);
+      if (val === undefined || val === null) {
+        continue;
+      }
+      var list = Array.isArray(val) ? val : [val];
+      var ok = list.length > 0;
+      for (var k = 0; k < list.length; k += 1) {
+        var it = list[k];
+        if (!it || typeof it !== 'object' || Array.isArray(it) || typeof it.tool !== 'string') {
+          ok = false;
+          break;
+        }
+      }
+      if (ok) {
+        return val;
+      }
+    }
+    return undefined;
+  }
+
+  /**
+   * 提取文本中所有括号配对的 JSON 块（最外层 {} 或 []）。
+   *
+   * 用于从含思考过程的文本里捞出 JSON，不做语义校验，仅做括号配对截取。
+   *
+   * @param {string} text 待扫描文本
+   * @returns {Array<string>} 括号配对的子串列表
+   */
+  function extractBalancedBlocks(text) {
+    var out = [];
+    var stack = [];
+    var start = -1;
+    for (var i = 0; i < text.length; i += 1) {
+      var ch = text[i];
+      if (ch === '{' || ch === '[') {
+        if (stack.length === 0) {
+          start = i;
+        }
+        stack.push(ch);
+      } else if (ch === '}' || ch === ']') {
+        if (stack.length === 0) {
+          continue;
+        }
+        var open = stack.pop();
+        if ((open === '{' && ch === '}') || (open === '[' && ch === ']')) {
+          if (stack.length === 0 && start >= 0) {
+            out.push(text.slice(start, i + 1));
+          }
+        } else {
+          // 括号不匹配，丢弃当前段
+          stack.length = 0;
+          start = -1;
+        }
+      }
+    }
+    return out;
   }
 
   /**

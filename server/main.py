@@ -93,29 +93,45 @@ if CONFIG.allow_cors_any:
 def build_prompt(request: ChatCompletionRequest) -> str:
     """把 messages 数组拼成一段可直接粘贴进网页输入框的文本。
 
+    采用 XML 标签包裹格式，避免裸前缀（如 ``[用户]``）被模型当成内容：
+      - 所有 ``role: system`` 消息合并进 ``<system>...</system>``（用户在扩展/请求中设置的系统提示词）；
+      - 用户与助手消息按 ``prompt_mode`` 合并进 ``<user>...</user>``。
+
     :param request: 客户端请求体
     :return: 拼接后的提示词；无有效内容时返回空串
     """
     if not request.messages:
         return ""
-    if CONFIG.prompt_mode == "last_user":
-        for message in reversed(request.messages):
-            if message.role == "user":
-                return message.content_text()
-        return ""
 
-    blocks: list[str] = []
+    system_parts: list[str] = []
+    user_parts: list[str] = []
     for message in request.messages:
         content = message.content_text()
         if not content:
             continue
         if message.role == "system":
-            blocks.append(f"[系统指令]\n{content}")
-        elif message.role == "assistant":
-            blocks.append(f"[历史回复]\n{content}")
+            system_parts.append(content)
         else:
-            blocks.append(f"[用户]\n{content}")
-    return "\n\n".join(blocks)
+            user_parts.append(content)
+
+    if CONFIG.prompt_mode == "last_user":
+        # 只取最后一条用户消息作为 <user> 内容
+        last_user = ""
+        for message in reversed(request.messages):
+            if message.role == "user":
+                last_user = message.content_text()
+                break
+        user_parts = [last_user] if last_user else []
+
+    system_block = ""
+    if system_parts:
+        system_block = "<system>\n" + "\n\n".join(system_parts) + "\n</system>"
+
+    user_block = ""
+    if user_parts:
+        user_block = "<user>\n" + "\n\n".join(user_parts) + "\n</user>"
+
+    return system_block + user_block
 
 
 def resolve_target_host(request: ChatCompletionRequest, headers: Any) -> str:
