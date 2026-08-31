@@ -205,7 +205,8 @@
     // 1) 收集顶层思考块（跳过嵌套在另一思考块内的）。
     //    同时记录「含折叠标题的原始文本」(raw) 与「去除 <summary> 后的干净正文」(clean)：
     //    后续用 raw 从容器全文里精确剔除，答案区只要不在思考块 DOM 内就一定保留。
-    var cleanList = [];
+    var cleanList = [];      // 顶层思考块（用于 <think> 包裹输出，避免同一块重复计入）
+    var allThinkTexts = [];  // 全部思考块文本（含嵌套/答案区复述），用于从最终答案中剔除
     var all = el.querySelectorAll('*');
     for (var i = 0; i < all.length; i += 1) {
       var node = all[i];
@@ -220,9 +221,6 @@
           break;
         }
         parent = parent.parentElement;
-      }
-      if (nested) {
-        continue;
       }
       // 折叠标题（"Thought for N seconds"）位于 <summary>，不属于思考正文，
       // 移除 <summary> 后读到的才是纯思考正文。
@@ -239,23 +237,28 @@
         .trim();
       // 兜底剔除折叠标题行（"Thought for N seconds" 等，可能不在 <summary> 标签里）
       clean = clean.replace(/Thought for[^\n]*\n?/gi, '').trim();
-      if (clean) {
-        cleanList.push(clean);
+      if (!clean) {
+        continue;
+      }
+      // 所有思考块文本都收集，后续从答案区统一剔除（含答案区里嵌套或复述的思考块，
+      // 避免模型把思考内容在最终答案里又重复一遍）；去重避免 <think> 输出重复
+      if (allThinkTexts.indexOf(clean) === -1) {
+        allThinkTexts.push(clean);
+        if (!nested) {
+          cleanList.push(clean);
+        }
       }
     }
 
-    // 2) 主文本：容器全文（textContent，不受折叠/可见性影响）减去各思考块原始文本。
-    //    不再「删除思考块 DOM 后读 innerText」——那样会把命中关键词的答案容器也误删。
+    // 2) 主文本：容器全文（textContent，不受折叠/可见性影响）减去「全部思考块」文本。
+    //    减去所有思考块（含嵌套/答案区复述）而非仅顶层，可避免最终答案里残留思考内容。
     var full = (el.textContent || '')
       .replace(/\r\n/g, '\n')
       .replace(/\u00a0/g, ' ')
       .trim();
-    // 主文本：容器全文减去「思考正文」(cleanList，已去除 <summary> 标题)。
-    // cleanList 只含思考正文、不含最终答案，因此减去后答案一定保留；
-    // 再清掉残留的 "Thought for N seconds" 标题行。
     var main = full;
-    for (var r = 0; r < cleanList.length; r += 1) {
-      main = main.split(cleanList[r]).join('');
+    for (var r = 0; r < allThinkTexts.length; r += 1) {
+      main = main.split(allThinkTexts[r]).join('');
     }
     main = main
       .replace(/Thought for[^\n]*\n?/gi, '')
