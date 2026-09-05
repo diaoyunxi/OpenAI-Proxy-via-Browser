@@ -359,6 +359,7 @@ class BrowserBridge:
 
         if msg_type == C2G_CHUNK:
             text = message.get("text")
+            logger.debug("[收到] CHUNK: type=%s request_id=%s text_length=%d", msg_type, request_id, len(text) if isinstance(text, str) else 0)
             if isinstance(text, str):
                 handle.feed(text)
             return
@@ -366,14 +367,20 @@ class BrowserBridge:
             text = message.get("text")
             reason = str(message.get("finish_reason") or "stop")
             tool_calls = message.get("tool_calls")
+            logger.info("[收到] DONE: type=%s request_id=%s reason=%s text_length=%d", msg_type, request_id, reason, len(text) if isinstance(text, str) else 0)
+            logger.debug("[收到] DONE detail: text=%r tool_calls=%r", text, tool_calls)
             if isinstance(tool_calls, list):
+                logger.info("[收到] DONE 包含工具调用: %d 个", len(tool_calls))
                 handle.tool_calls = tool_calls
             handle.finish(text if isinstance(text, str) else None, reason)
             return
         if msg_type == C2G_ERROR:
+            code = message.get("code")
+            error_msg = message.get("message")
+            logger.error("[收到] ERROR: type=%s request_id=%s code=%s message=%s", msg_type, request_id, code, error_msg)
             handle.fail(
-                str(message.get("code") or ERR_INTERNAL),
-                str(message.get("message") or "浏览器侧任务失败"),
+                str(code or ERR_INTERNAL),
+                str(error_msg or "浏览器侧任务失败"),
             )
             return
 
@@ -437,7 +444,8 @@ class BrowserBridge:
             if not sent:
                 raise BrowserUnavailableError("浏览器扩展连接已丢失，任务未能下发")
 
-            logger.info("任务已派发：%s host=%s", request_id, profile.get("host") or "<默认>")
+            logger.info("任务已派发：%s host=%s prompt_length=%d", request_id, profile.get("host") or "<默认>", len(prompt))
+            logger.debug("任务派发内容: prompt=%r profile=%r", prompt, profile)
             waiter = asyncio.create_task(
                 self._await_finish(handle, timeout, disconnect_checker),
                 name=f"oap-wait-{request_id}",

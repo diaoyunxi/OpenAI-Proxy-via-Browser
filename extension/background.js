@@ -628,9 +628,12 @@ function finishCurrentTask(text, finishReason) {
   detachDebugger(task.tabId);
   // 提取工具调用
   var toolCalls = extractToolCalls(text);
+  console.log('[oap] finishCurrentTask: text_length=' + (text ? text.length : 0) +
+              ' finish_reason=' + finishReason + ' toolCalls=' + JSON.stringify(toolCalls));
   var payload = { type: 'done', text: text, finish_reason: finishReason || 'stop' };
   if (toolCalls && toolCalls.length > 0) {
     payload.tool_calls = toolCalls;
+    console.log('[oap] 提取到工具调用: ' + toolCalls.length + ' 个');
   }
   task.reporter(payload);
   broadcastStatus();

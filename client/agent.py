@@ -61,15 +61,23 @@ class Agent:
             except OAPError as e:
                 return f"⚠️ 网关调用失败：{e}"
 
+            import logging
+            logger = logging.getLogger("oap.agent")
             content = self._extract_content(resp)
             # 优先检查是否有原生 tool_calls（来自浏览器扩展）
             native_tool_calls = self._extract_tool_calls(resp)
+            logger.debug("收到响应: content_length=%d tool_calls=%r", len(content) if content else 0, native_tool_calls)
             if native_tool_calls:
                 # 转换为自定义格式 {(name, args)}
                 calls = [(tc["tool"], tc.get("args", {})) for tc in native_tool_calls]
+                logger.info("使用原生工具调用: %d 个 -> %s", len(calls), [c[0] for c in calls])
             else:
                 # 兼容旧格式：从 content 文本中解析
                 calls = parse_tool_calls(content)
+                if calls:
+                    logger.info("从文本解析工具调用: %d 个 -> %s", len(calls), [c[0] for c in calls])
+                else:
+                    logger.debug("未找到工具调用")
 
             # 记录模型原始输出（可能是工具调用 JSON，也可能是自然语言）
             self.history.append({"role": "assistant", "content": content})
