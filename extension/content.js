@@ -596,6 +596,11 @@
         continue;
       }
       var text = readText(el);
+      // 排除页面 chrome 区域的元素：侧边栏（对话名列表）、头部（标题/模式切换）、
+      // 导航内的元素变化（新对话命名、模式徽标、免责声明出现）与模型回复无关
+      if (el.closest && el.closest('nav,aside,header,[role="navigation"]')) {
+        continue;
+      }
       // 排除「用户消息气泡」元素：其文本以 prompt 开头且总长与 prompt 相当。
       // 注意不能用「包含 prompt 即排除」——模型在回复中引用/复述 prompt 原文
       // （代码改写、JSON 处理等场景）是常态，包含式误杀会导致回复容器永远选不中。
@@ -699,6 +704,12 @@
       if (blockCount > 1200) {
         continue;
       }
+      // 跳过「包含页面 chrome 后代」的容器（body/main 级整页容器）：
+      // 这类容器的文本里混有侧边栏对话名、模式徽标、免责声明等 UI 噪音。
+      // 仅当所有候选都含 chrome（无更优选择）时才由末尾 fallback 兜底。
+      if (candidate.el.querySelector('nav,aside,header,[role="navigation"]')) {
+        continue;
+      }
       if (!isThinkBlock(candidate.el) && containsThinkBlock(candidate.el)) {
         return candidate.el;
       }
@@ -722,12 +733,28 @@
   // ------------------------------------------------------------------ 文本清理工具
 
   /**
+   * 已知页面 UI 噪音模式（行级/片段级）。
+   * 这些文本由站点 UI 渲染产生，与模型回复内容无关，命中即删。
+   * 模式要求高度特异（含固定长句或严格整行匹配），避免误伤正常回复。
+   */
+  var UI_NOISE_PATTERNS = [
+    // DeepSeek 回复底部免责声明（常与模式徽标连写成一个片段）
+    /(?:DeepThink|Think|Search|R1|V3)\s*Search\s*AI-generated, for reference only/gi,
+    /AI-generated, for reference only/gi,
+    // DeepSeek 消息头部的模式徽标（仅整行独立出现时才删，防止误删正文单词）
+    /^\s*-?\s*(DeepThinkSearch|DeepThink|ThinkSearch)\s*$/gm,
+    // 常见对话操作按钮行
+    /^\s*(Copy code|复制代码|重新生成|Regenerate|Good response|Bad response)\s*$/gm
+  ];
+
+  /**
    * 清理回复文本，仅移除确定性的页面噪音。
    *
    * 注意：本扩展是通用 OpenAI API 代理，模型回复中的代码块、JSON、引用块
    * 都属于「回复本体」，绝不能删除（旧版删除 ``` 代码块导致模型输出
    * JSON/代码时服务端收到空串）。此处只清理与页面渲染相关的标记：
    *   - <system>/<user> 标签包裹的内容（部分站点用来渲染消息角色）；
+   *   - 已知 UI 噪音片段（免责声明、模式徽标、操作按钮行）；
    *   - 多余空白归一化。
    *
    * @param {string} text 原始文本
@@ -742,6 +769,10 @@
     out = out.replace(/<system>\n?[\s\S]*?<\/system>/gi, '');
     // 移除 user 标签包裹的内容
     out = out.replace(/<user>\n?[\s\S]*?<\/user>/gi, '');
+    // 移除已知 UI 噪音片段
+    for (var i = 0; i < UI_NOISE_PATTERNS.length; i += 1) {
+      out = out.replace(UI_NOISE_PATTERNS[i], '');
+    }
     // 清理多余空白
     out = out.replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
     return out;
