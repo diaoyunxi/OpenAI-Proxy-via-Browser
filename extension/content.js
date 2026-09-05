@@ -520,10 +520,24 @@
   }
 
   /**
-   * 对页面做一次文本长度快照，用于后续计算增量。
-   * @returns {Map<Element, number>} 元素到文本长度的映射
+   * 单个快照条目文本的上限（字符数）。
+   * 超长文本（如整页历史容器）截断存储，避免快照占用过多内存；
+   * 截断只影响前缀剥离的精度，不影响「文本是否变化」的判定。
    */
-  function snapshotLengths() {
+  var SNAPSHOT_TEXT_LIMIT = 50000;
+
+  /**
+   * 对页面做一次文本快照，用于后续计算变化量与基线剥离。
+   *
+   * 与旧版（仅存长度）不同，这里保存归一化后的文本内容：
+   *   - 既能判断「文本增长」，也能判断「文本被替换 / 变短」——
+   *     SPA 站点在多轮对话中常复用同一 DOM 节点渲染新回复，
+   *     此时长度可能不变甚至变短，只有内容比较才能感知变化；
+   *   - 命中容器后可用快照文本作为基线，把旧回复从累积文本中剥离。
+   *
+   * @returns {Map<Element, string>} 元素到归一化文本的映射
+   */
+  function snapshotTexts() {
     var snapshot = new Map();
     var candidates = collectCandidates();
     for (var i = 0; i < candidates.length; i += 1) {
@@ -531,26 +545,35 @@
       if (!isVisible(el)) {
         continue;
       }
-      snapshot.set(el, readText(el).length);
+      var text = readText(el);
+      if (text.length > SNAPSHOT_TEXT_LIMIT) {
+        text = text.slice(0, SNAPSHOT_TEXT_LIMIT);
+      }
+      snapshot.set(el, text);
     }
     return snapshot;
   }
 
   /**
-   * 依据文本增量自动挑选最可能的响应容器。
+   * 依据文本变化自动挑选最可能的响应容器。
    *
    * 策略：
-   *   1. 只考虑可见、非输入框、且文本有增长的元素；
-   *   2. 若某元素的某个后代贡献了几乎全部增量，则该元素是「祖先容器」，予以排除，
+   *   1. 只考虑可见、非输入框、且「文本发生变化」的元素。
+   *      变化包括三种形态（旧版只识别第 1 种，是「第二轮起提取不到」的根因）：
+   *        a) 文本增长（绝大多数站点的流式追加）；
+   *        b) 文本被整体替换且长度变短（SPA 复用同一节点渲染新回复，
+   *           新回复比上一轮短时 delta < 0，旧版直接漏掉）；
+   *        c) 文本被替换但长度恰好不变（同样复用场景）；
+   *   2. 若某元素的某个后代贡献了几乎全部变化，则该元素是「祖先容器」，予以排除，
    *      从而选中粒度最细、最贴近真实回答的那个节点；
-   *   3. 在剩余元素中取增量最大者。
+   *   3. 在剩余元素中按变化幅度与 DOM 深度排序取最优。
    *
-   * @param {Map<Element, number>} snapshot 发送前（或上一轮）的文本长度快照
-   * @returns {Element|null} 命中的响应容器，未产生任何增量时返回 null
+   * @param {Map<Element, string>} snapshot 发送前（或上一轮）的文本快照
+   * @returns {Element|null} 命中的响应容器，未产生任何变化时返回 null
    */
   function pickResponseElement(snapshot) {
     var candidates = collectCandidates();
-    var grown = [];
+    var changed = [];
 
     for (var i = 0; i < candidates.length; i += 1) {
       var el = candidates[i];
@@ -561,31 +584,39 @@
       if (tag === 'input' || tag === 'textarea' || el.isContentEditable) {
         continue;
       }
-      // 不选思考块本身（其增长通常最大，但含的是思考过程而非完整回复）
+      // 不选思考块本身（其变化通常最大，但含的是思考过程而非完整回复）
       if (isThinkBlock(el)) {
         continue;
       }
-      var length = readText(el).length;
-      var previous = snapshot.has(el) ? snapshot.get(el) : 0;
-      var delta = length - previous;
-      if (delta > 0) {
-        grown.push({ el: el, delta: delta, length: length });
+      var text = readText(el);
+      var previous = snapshot.has(el) ? snapshot.get(el) : '';
+      // 内容完全一致（含两者皆为空串）视为无变化
+      if (text === previous) {
+        continue;
       }
+      // 变化幅度取差值的绝对值：替换/变短场景同样有效
+      var delta = Math.abs(text.length - previous.length);
+      // 长度相同但内容不同（整体替换且长度巧合相等）时，视为有 1 个单位的变化，
+      // 保证这类容器不会因 delta 为 0 而被丢弃
+      if (delta === 0) {
+        delta = 1;
+      }
+      changed.push({ el: el, delta: delta, length: text.length });
     }
 
-    if (grown.length === 0) {
+    if (changed.length === 0) {
       return null;
     }
 
     var filtered = [];
-    for (var a = 0; a < grown.length; a += 1) {
-      var current = grown[a];
+    for (var a = 0; a < changed.length; a += 1) {
+      var current = changed[a];
       var isAncestor = false;
-      for (var b = 0; b < grown.length; b += 1) {
+      for (var b = 0; b < changed.length; b += 1) {
         if (a === b) {
           continue;
         }
-        var other = grown[b];
+        var other = changed[b];
         if (current.el !== other.el && current.el.contains(other.el) && other.delta >= current.delta * 0.95) {
           isAncestor = true;
           break;
@@ -596,7 +627,7 @@
       }
     }
 
-    var list = filtered.length > 0 ? filtered : grown;
+    var list = filtered.length > 0 ? filtered : changed;
     list.sort(function (x, y) {
       if (y.delta !== x.delta) {
         return y.delta - x.delta;
@@ -626,12 +657,14 @@
       return x.length - y.length;
     });
 
-    // 多轮对话页上，整页消息列表也会随新回复增长，且增长量最大。
+    // 多轮对话页上，整页消息列表也会随新回复变化，且变化量最大。
     // 这里跳过明显包含过多后代块级元素的整页历史容器，优先取单条回复。
     var best = null;
     for (var c = 0; c < list.length; c += 1) {
       var candidate = list[c];
-      if (candidate.delta < 20) {
+      // 阈值较旧版下调（20→4）：容器复用+整体替换场景下，短回复的变化量
+      // 可能很小，但只要内容确实变了就应当命中；4 以下视为噪音忽略
+      if (candidate.delta < 4) {
         continue;
       }
       var blockCount = candidate.el.querySelectorAll("p,div,li,pre,code").length;
@@ -773,7 +806,7 @@
         element = null;
       }
     }
-    // 复用本轮任务已选定的 element（深度思考块折叠时 innerText 检测不到增长，
+    // 复用本轮任务已选定的 element（深度思考块折叠时 innerText 检测不到变化，
     // 每轮重选会抖动；选定一次后持续复用，直到容器失效）。
     if (!element && job.element && document.body.contains(job.element) && isVisible(job.element)) {
       element = job.element;
@@ -782,8 +815,22 @@
       element = pickResponseElement(job.snapshot);
       job.element = element;
     }
+    // 首次拿到容器时记录基线（无论来自用户配置选择器还是自动探测）：
+    //   - 累积型容器（新回复追加在旧回复之后）：后续用基线前缀剥离旧内容；
+    //   - 复用替换型容器（旧文本被新回复整体替换）：基线不匹配时自动回退全量。
+    if (element && job.baselineText === null) {
+      job.baselineText = job.snapshot.has(element) ? job.snapshot.get(element) : '';
+      if (job.baselineText) {
+        log('已记录基线文本 ' + job.baselineText.length + ' 字符，用于剥离旧回复', 'debug');
+      }
+    }
 
     var text = readReplyText(element);
+    // 基线剥离：readReplyText 的输出若以基线（旧回复）为前缀，则切掉前缀只保留新内容；
+    // 前缀不匹配（容器被整体替换、或归一化导致错位）时保留全量，宁可多带旧文也不丢新回复。
+    if (text && job.baselineText && text.indexOf(job.baselineText) === 0) {
+      text = text.slice(job.baselineText.length).trim();
+    }
     if (text && text !== job.lastText) {
       // DOM 是累积文本，通常只需取新增部分；若发生重排则整段替换
       var delta = text.indexOf(job.lastText) === 0 ? text.slice(job.lastText.length) : text;
@@ -903,7 +950,8 @@
       startedAt: Date.now(),
       lastChangeAt: Date.now(),
       timeoutMs: payload.timeoutMs || 180000,
-      snapshot: snapshotLengths(),
+      snapshot: snapshotTexts(),
+      baselineText: null,
       lastText: '',
       hasContent: false,
       netDone: false,
