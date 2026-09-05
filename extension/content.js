@@ -31,6 +31,8 @@
   var port = null;
   /** 已累计监听到的网络文本长度，仅用于日志诊断 */
   var netTextLength = 0;
+  /** 「探测无果」诊断日志的节流时间戳 */
+  var pickNullDiagAt = 0;
 
   // ------------------------------------------------------------------ 基础工具
 
@@ -574,31 +576,42 @@
   function pickResponseElement(snapshot, prompt) {
     var candidates = collectCandidates();
     var changed = [];
+    /** 诊断统计：各类被过滤掉的候选数量，用于「识别不到」时定位原因 */
+    var stats = { invisible: 0, input: 0, think: 0, promptLike: 0, unchanged: 0 };
 
     for (var i = 0; i < candidates.length; i += 1) {
       var el = candidates[i];
       if (!isVisible(el)) {
+        stats.invisible += 1;
         continue;
       }
       var tag = (el.tagName || '').toLowerCase();
       if (tag === 'input' || tag === 'textarea' || el.isContentEditable) {
+        stats.input += 1;
         continue;
       }
       // 不选思考块本身（其变化通常最大，但含的是思考过程而非完整回复）
       if (isThinkBlock(el)) {
+        stats.think += 1;
         continue;
       }
       var text = readText(el);
-      // 排除「用户消息」元素：快照在发送前拍摄，发送后文本包含 prompt 的元素
-      // 是用户消息气泡或其祖先（含消息列表整页容器）。这类元素的变化全部来自
-      // prompt 本身，若不排除会被误选为响应容器（其文本=旧对话+prompt，无新回复）。
-      // 仅在 prompt 足够长（>20 字符）时启用，避免短 prompt 误伤正常回复。
-      if (prompt && prompt.length > 20 && text && text.indexOf(prompt) !== -1) {
+      // 排除「用户消息气泡」元素：其文本以 prompt 开头且总长与 prompt 相当。
+      // 注意不能用「包含 prompt 即排除」——模型在回复中引用/复述 prompt 原文
+      // （代码改写、JSON 处理等场景）是常态，包含式误杀会导致回复容器永远选不中。
+      // 祖先容器（旧对话+prompt+新回复）不以 prompt 开头，不受此规则影响，
+      // 其混入的 prompt 由 tick 中的前缀剥离兜底。
+      if (
+        prompt && prompt.length > 20 && text &&
+        text.indexOf(prompt) === 0 && text.length < prompt.length * 1.5
+      ) {
+        stats.promptLike += 1;
         continue;
       }
       var previous = snapshot.has(el) ? snapshot.get(el) : '';
       // 内容完全一致（含两者皆为空串）视为无变化
       if (text === previous) {
+        stats.unchanged += 1;
         continue;
       }
       // 变化幅度取差值的绝对值：替换/变短场景同样有效
@@ -612,6 +625,14 @@
     }
 
     if (changed.length === 0) {
+      // 节流输出诊断（最多每 5 秒一次）：帮助定位「识别不到回复」时各环节过滤情况
+      var nowMs = Date.now();
+      if (nowMs - pickNullDiagAt > 5000) {
+        pickNullDiagAt = nowMs;
+        log('探测无果：候选 ' + candidates.length + '，不可见 ' + stats.invisible +
+          '，输入类 ' + stats.input + '，思考块 ' + stats.think +
+          '，疑似用户消息 ' + stats.promptLike + '，无变化 ' + stats.unchanged, 'debug');
+      }
       return null;
     }
 
@@ -821,13 +842,13 @@
       element = pickResponseElement(job.snapshot, job.prompt);
       job.element = element;
     }
-    // 首次拿到容器时记录基线（无论来自用户配置选择器还是自动探测）：
-    //   - 累积型容器（新回复追加在旧回复之后）：后续用基线前缀剥离旧内容；
-    //   - 复用替换型容器（旧文本被新回复整体替换）：基线不匹配时自动回退全量。
-    if (element && job.baselineText === null) {
+    // 基线随容器走：虚拟列表可能重建节点导致 element 更换，旧基线对新容器完全错位，
+    // 必须在容器变化时重新记录（而非只在任务开始记录一次）。
+    if (element && job.baselineEl !== element) {
+      job.baselineEl = element;
       job.baselineText = job.snapshot.has(element) ? job.snapshot.get(element) : '';
       if (job.baselineText) {
-        log('已记录基线文本 ' + job.baselineText.length + ' 字符，用于剥离旧回复', 'debug');
+        log('容器切换，重新记录基线文本 ' + job.baselineText.length + ' 字符', 'debug');
       }
     }
 
@@ -845,6 +866,11 @@
         log('基线剥离后为空，判定基线失效，回退全文', 'warn');
       }
     }
+    // prompt 前缀剥离：若最终选中的是「累积型祖先容器」（文本=旧对话+prompt+新回复），
+    // 基线剥掉旧对话后开头残留的是本次 prompt，需一并剥掉才是纯回复。
+    if (text && job.prompt && job.prompt.length > 20 && text.indexOf(job.prompt) === 0) {
+      text = text.slice(job.prompt.length).trim();
+    }
     if (text && text !== job.lastText) {
       // DOM 是累积文本，通常只需取新增部分；若发生重排则整段替换
       var delta = text.indexOf(job.lastText) === 0 ? text.slice(job.lastText.length) : text;
@@ -861,8 +887,12 @@
       // 本轮文本与上一轮一致，连续稳定计数 +1
       job.stablePolls += 1;
     } else {
-      // 尚无可读内容，不计入稳定
-      job.stablePolls = 0;
+      // text 为空：可能是「尚无可读内容」，也可能是虚拟列表重渲染导致容器暂时失联。
+      // 后者发生时任务往往已有内容（hasContent=true），若清零稳定计数会导致
+      // 回复完成后永远无法满足结束条件（表现为「回复完扩展不返回」）。
+      // 因此这里统一按稳定处理：无内容时 hasContent=false 不会触发结束，无副作用；
+      // 有内容时容器短暂失联不再阻断结束判定。
+      job.stablePolls += 1;
     }
 
     // 结束判定：基于「连续多次轮询文本无变化」，而非绝对静默时长。
@@ -972,6 +1002,7 @@
       lastChangeAt: Date.now(),
       timeoutMs: payload.timeoutMs || 180000,
       snapshot: snapshot,
+      baselineEl: null,
       baselineText: null,
       lastText: '',
       hasContent: false,
