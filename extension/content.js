@@ -603,23 +603,91 @@
       }
       return x.length - y.length; // 增量相同时取更短（更精确）的容器
     });
-    // 优先选「包含思考块、且自身非思考块」的容器：它是完整回复容器，
-    // 同时含思考过程与最终答案，readReplyText 才能正确分离二者。
+
+    // 计算每个候选元素的深度，用于多轮对话页面的保护
+    for (var g = 0; g < list.length; g += 1) {
+      var depthNode = list[g].el;
+      var depth = 0;
+      while (depthNode && depthNode !== document.body) {
+        depth += 1;
+        depthNode = depthNode.parentElement;
+      }
+      list[g].depth = depth;
+    }
+
+    // 重新排序：优先选择深度大的元素（更靠近具体回复）
+    list.sort(function (x, y) {
+      if (y.delta !== x.delta) {
+        return y.delta - x.delta;
+      }
+      if (y.depth !== x.depth) {
+        return y.depth - x.depth;
+      }
+      return x.length - y.length;
+    });
+
+    // 多轮对话页上，整页消息列表也会随新回复增长，且增长量最大。
+    // 这里跳过明显包含过多后代块级元素的整页历史容器，优先取单条回复。
+    var best = null;
     for (var c = 0; c < list.length; c += 1) {
-      if (!isThinkBlock(list[c].el) && containsThinkBlock(list[c].el)) {
-        return list[c].el;
+      var candidate = list[c];
+      if (candidate.delta < 20) {
+        continue;
+      }
+      var blockCount = candidate.el.querySelectorAll("p,div,li,pre,code").length;
+      if (blockCount > 1200) {
+        continue;
+      }
+      if (!isThinkBlock(candidate.el) && containsThinkBlock(candidate.el)) {
+        return candidate.el;
+      }
+      if (!best && !isThinkBlock(candidate.el)) {
+        best = candidate;
       }
     }
-    for (var d = 0; d < list.length; d += 1) {
-      if (!isThinkBlock(list[d].el)) {
-        return list[d].el;
-      }
+    if (best) {
+      return best.el;
     }
-    return list[0].el;
+    if (list.length) {
+      return list[0].el;
+    }
+    return null;
   }
 
 
 
+
+
+  // ------------------------------------------------------------------ 文本清理工具
+
+  /**
+   * 清理回复文本，移除系统标记、代码块、PowerShell提示符等噪音。
+   * @param {string} text 原始文本
+   * @returns {string} 清理后的文本
+   */
+  function cleanReplyText(text) {
+    if (!text) {
+      return '';
+    }
+    var out = String(text);
+    // 移除 system 标签包裹的内容
+    out = out.replace(/<system>\n?[\s\S]*?<\/system>/gi, '');
+    // 移除 user 标签包裹的内容
+    out = out.replace(/<user>\n?[\s\S]*?<\/user>/gi, '');
+    // 移除代码块（包括 language-json 等标记）
+    out = out.replace(/```(?:json)?\s*\n?[\s\S]*?```/gi, '');
+    // 移除 JSON 格式的工具调用标记
+    out = out.replace(/\{\s*"tool"\s*:[\s\S]*?\n?\}/gi, '');
+    // 移除 PowerShell 提示符行
+    out = out.replace(/PS\s+[^\n]+>.*(?:\n|$)/g, '');
+    // 移除引用块前缀
+    out = out.replace(/^\s*[>+]\s+.*(?:\n|$)/gm, '');
+    // 移除 "At line:" 后面的内容
+    out = out.replace(/At line:[\s\S]*?\n/g, '');
+    // 清理多余空白
+    out = out.replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+    return out;
+  }
 
 
   // ------------------------------------------------------------------ 任务执行
@@ -639,7 +707,8 @@
     }
     window.postMessage({ __oap: 'OAP_NET_CHANNEL', type: 'disarm' }, '*');
 
-    var text = current.lastText;
+    // 清理回复文本，移除系统标记和噪音
+    var text = cleanReplyText(current.lastText);
     var payload = {
       action: 'done',
       requestId: current.requestId,
