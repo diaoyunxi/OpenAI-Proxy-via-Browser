@@ -834,6 +834,17 @@
 
     // 清理回复文本，移除系统标记和噪音
     var text = cleanReplyText(current.lastText);
+    // 兜底防线：锁定内容非空但清洗后为空，说明全是 UI 噪音碎片，
+    // 不能把空串当成功回复返回（表现为「AI 未回复返回空」），改为报错。
+    if (!text && current.lastText && current.lastText.trim()) {
+      report({
+        action: 'error',
+        requestId: current.requestId,
+        code: 'empty_reply',
+        message: '锁定的回复内容清洗后为空（均为页面 UI 噪音），未提取到有效回复'
+      });
+      return;
+    }
     var payload = {
       action: 'done',
       requestId: current.requestId,
@@ -933,24 +944,34 @@
         log('基线剥离后为空，判定基线失效，回退全文', 'warn');
       }
     }
-    // prompt 前缀剥离：若最终选中的是「累积型祖先容器」（文本=旧对话+prompt+新回复），
-    // 基线剥掉旧对话后开头残留的是本次 prompt，需一并剥掉才是纯回复。
-    if (text && job.prompt && text.indexOf(job.prompt) === 0) {
-      text = text.slice(job.prompt.length).trim();
-    }
-    // 用户消息回声校验：若剥离后仍是「prompt+少量UI标签」（如「你好Instant」），
-    // 说明选中的是用户消息气泡而非 AI 回复，视为无效内容：
-    // 清空锁定容器强制重探，且不计入稳定（否则 AI 未回复时用户消息静止
-    // 会被误判为完成，提前把 prompt 当回复返回）。
-    if (text && isPromptEcho(text, job.prompt)) {
+    // 无效内容拦截（必须在 prompt 剥离之前，用原始 text 判断）：
+    // AI 回复开始前页面上有两类「假信号」会被误当回复容器锁定：
+    //   1) 用户消息回声：容器文本 = prompt + 少量 UI 标签（如「你好Instant」），
+    //      若先剥 prompt 再判回声，indexOf(prompt)===0 永远为假，校验形同虚设；
+    //   2) 纯 UI 噪音：回复区先渲染模式徽标（DeepThinkSearch 等）/免责声明，
+    //      正文未到，cleanReplyText 清洗后为空。旧逻辑把这类静止碎片记为
+    //      hasContent=true，稳定后提前 finish 且清洗后返回空串，
+    //      表现为「AI 未回复 crx 就返回空」。
+    // 处理：清空锁定容器强制重探、不计稳定、不计 hasContent；
+    // 且不 return——保证下方超时判定仍可触发，AI 始终不回复时按 no_response 报错。
+    if (text && (isPromptEcho(text, job.prompt) || !cleanReplyText(text))) {
+      // 节流日志：同一碎片文本只记一次，避免每轮轮询刷屏
+      if (job.noiseLoggedText !== text) {
+        job.noiseLoggedText = text;
+        log('命中的是用户消息回声或纯 UI 噪音，丢弃并重探容器', 'warn');
+      }
       if (job.element) {
-        log('命中的是用户消息回声，丢弃并重探容器', 'warn');
         job.element = null;
         job.baselineEl = null;
         job.baselineText = null;
       }
       job.stablePolls = 0;
-      return;
+      text = '';
+    }
+    // prompt 前缀剥离：若最终选中的是「累积型祖先容器」（文本=旧对话+prompt+新回复），
+    // 基线剥掉旧对话后开头残留的是本次 prompt，需一并剥掉才是纯回复。
+    if (text && job.prompt && text.indexOf(job.prompt) === 0) {
+      text = text.slice(job.prompt.length).trim();
     }
     if (text && text !== job.lastText) {
       // DOM 是累积文本，通常只需取新增部分；若发生重排则整段替换
@@ -1107,6 +1128,7 @@
       element: null,
       signalReported: false,
       staleRetries: 0,
+      noiseLoggedText: '',
       timer: null
     };
 
