@@ -62,10 +62,18 @@ class Agent:
                 return f"⚠️ 网关调用失败：{e}"
 
             content = self._extract_content(resp)
+            # 优先检查是否有原生 tool_calls（来自浏览器扩展）
+            native_tool_calls = self._extract_tool_calls(resp)
+            if native_tool_calls:
+                # 转换为自定义格式 {(name, args)}
+                calls = [(tc["tool"], tc.get("args", {})) for tc in native_tool_calls]
+            else:
+                # 兼容旧格式：从 content 文本中解析
+                calls = parse_tool_calls(content)
+
             # 记录模型原始输出（可能是工具调用 JSON，也可能是自然语言）
             self.history.append({"role": "assistant", "content": content})
 
-            calls = parse_tool_calls(content)
             if not calls:
                 if _looks_like_tool_call(content):
                     if self._format_retried:
@@ -113,6 +121,11 @@ class Agent:
 
     @staticmethod
     def _extract_content(resp: Dict[str, Any]) -> str:
+        """从网关响应中提取内容，优先使用 tool_calls（如有），否则返回 content。
+
+        注意：当存在工具调用时，content 通常为 null，工具调用信息通过 tool_calls 字段传递。
+        此处返回纯文本内容，供历史记录使用；实际的工具调用由 _extract_tool_calls 处理。
+        """
         try:
             return resp["choices"][0]["message"]["content"] or ""
         except (KeyError, IndexError, TypeError) as e:
@@ -120,6 +133,46 @@ class Agent:
                 f"网关响应缺少 choices[0].message.content："
                 f"{json.dumps(resp, ensure_ascii=False)[:200]}"
             ) from e
+
+    @staticmethod
+    def _extract_tool_calls(resp: Dict[str, Any]) -> Optional[List]:
+        """从网关响应中提取工具调用列表。
+
+        支持 OpenAI 格式的 tool_calls（{id, type, function}）和本项目自定义格式（{tool, args}）。
+        """
+        try:
+            message = resp["choices"][0]["message"]
+            tool_calls = message.get("tool_calls")
+            if not tool_calls:
+                return None
+            # 转换为统一的 {tool, args} 格式
+            normalized = []
+            for tc in tool_calls:
+                if isinstance(tc, dict):
+                    if "tool" in tc:
+                        # 已经是自定义格式
+                        normalized.append(tc)
+                    elif "function" in tc:
+                        # OpenAI 标准格式
+                        func = tc["function"]
+                        args_str = func.get("arguments", "{}")
+                        try:
+                            args = json.loads(args_str) if isinstance(args_str, str) else args_str
+                        except (ValueError, TypeError):
+                            args = {"raw": args_str}
+                        normalized.append({"tool": func.get("name", ""), "args": args})
+                    elif "id" in tc and "type" in tc:
+                        # OpenAI 新格式
+                        func = tc.get("function", {})
+                        args_str = func.get("arguments", "{}")
+                        try:
+                            args = json.loads(args_str) if isinstance(args_str, str) else args_str
+                        except (ValueError, TypeError):
+                            args = {"raw": args_str}
+                        normalized.append({"tool": func.get("name", ""), "args": args})
+            return normalized if normalized else None
+        except (KeyError, IndexError, TypeError):
+            return None
 
     def _execute_tool(self, name: str, args: Dict[str, Any]) -> str:
         func = self.tools.get(name)

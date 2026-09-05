@@ -676,8 +676,6 @@
     out = out.replace(/<user>\n?[\s\S]*?<\/user>/gi, '');
     // 移除代码块（包括 language-json 等标记）
     out = out.replace(/```(?:json)?\s*\n?[\s\S]*?```/gi, '');
-    // 移除 JSON 格式的工具调用标记
-    out = out.replace(/\{\s*"tool"\s*:[\s\S]*?\n?\}/gi, '');
     // 移除 PowerShell 提示符行
     out = out.replace(/PS\s+[^\n]+>.*(?:\n|$)/g, '');
     // 移除引用块前缀

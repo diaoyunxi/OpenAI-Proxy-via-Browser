@@ -597,6 +597,23 @@ function failCurrentTask(code, message) {
 }
 
 /**
+ * 从文本中提取工具调用 JSON（格式: [{"tool": "name", "args": {...}}]）
+ * @param {string} text 模型回复文本
+ * @returns {Array|null} 工具调用数组或 null
+ */
+function extractToolCalls(text) {
+  if (!text || typeof text !== 'string') return null;
+  // 匹配工具调用数组格式
+  var match = text.match(/^\s*(\[\s*\{\s*"tool"\s*:[\s\S]*?\}\s*\])\s*$/i);
+  if (!match) return null;
+  try {
+    return JSON.parse(match[1]);
+  } catch (e) {
+    return null;
+  }
+}
+
+/**
  * 结束当前任务（成功路径）。
  * @param {string} text 完整回答文本
  * @param {string} finishReason 结束原因
@@ -609,7 +626,13 @@ function finishCurrentTask(text, finishReason) {
   clearTaskTimers(task);
   state.currentTask = null;
   detachDebugger(task.tabId);
-  task.reporter({ type: 'done', text: text, finish_reason: finishReason || 'stop' });
+  // 提取工具调用
+  var toolCalls = extractToolCalls(text);
+  var payload = { type: 'done', text: text, finish_reason: finishReason || 'stop' };
+  if (toolCalls && toolCalls.length > 0) {
+    payload.tool_calls = toolCalls;
+  }
+  task.reporter(payload);
   broadcastStatus();
 }
 
