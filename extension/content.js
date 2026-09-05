@@ -688,6 +688,10 @@
     // 多轮对话页上，整页消息列表也会随新回复变化，且变化量最大。
     // 这里跳过明显包含过多后代块级元素的整页历史容器，优先取单条回复。
     var best = null;
+    /** 含「发送前旧内容」的降级候选：多轮对话时消息列表祖先容器会同时包含
+     *  旧用户气泡（prompt+模式徽标）与旧回复，直接返回会导致新回复里
+     *  混入上一轮全文；仅在无更优候选时才由其兜底。 */
+    var staleBest = null;
     for (var c = 0; c < list.length; c += 1) {
       var candidate = list[c];
       // 阈值较旧版下调（20→4）：容器复用+整体替换场景下，短回复的变化量
@@ -705,15 +709,31 @@
       if (candidate.el.querySelector('nav,aside,header,[role="navigation"]')) {
         continue;
       }
-      if (!isThinkBlock(candidate.el) && containsThinkBlock(candidate.el)) {
+      if (isThinkBlock(candidate.el)) {
+        continue;
+      }
+      // 含旧内容（与发送前快照高度重叠）的容器降级处理：
+      // 该类容器多半是「消息列表祖先」，文本 = 旧用户气泡 + 旧回复 + 新回复，
+      // 优先选择不含旧内容的更细粒度候选（单条新回复节点）
+      if (isStaleContent(readText(candidate.el), snapshot)) {
+        if (!staleBest) {
+          staleBest = candidate;
+        }
+        continue;
+      }
+      if (containsThinkBlock(candidate.el)) {
         return candidate.el;
       }
-      if (!best && !isThinkBlock(candidate.el)) {
+      if (!best) {
         best = candidate;
       }
     }
     if (best) {
       return best.el;
+    }
+    if (staleBest) {
+      log('所有候选均含发送前旧内容，降级使用变化最大的容器（依赖基线剥离旧文）', 'warn');
+      return staleBest.el;
     }
     if (list.length) {
       return list[0].el;
@@ -736,8 +756,9 @@
     // DeepSeek 回复底部免责声明（常与模式徽标连写成一个片段）
     /(?:DeepThink|Think|Search|R1|V3)\s*Search\s*AI-generated, for reference only/gi,
     /AI-generated, for reference only/gi,
-    // DeepSeek 消息头部的模式徽标（仅整行独立出现时才删，防止误删正文单词）
-    /^\s*-?\s*(DeepThinkSearch|DeepThink|ThinkSearch)\s*$/gm,
+    // DeepSeek 消息头部的模式徽标（仅整行独立出现时才删，防止误删正文单词）；
+    // Instant 为非思考模式徽标，同样只按整行匹配避免误删正文单词
+    /^\s*-?\s*(DeepThinkSearch|DeepThink|ThinkSearch|Instant)\s*$/gm,
     // 常见对话操作按钮行
     /^\s*(Copy code|复制代码|重新生成|Regenerate|Good response|Bad response)\s*$/gm
   ];
@@ -762,6 +783,10 @@
    * 虚拟列表重建节点后，含旧回复全文的容器不在快照中（previous=''），
    * 其全部文本会被误当作新内容。此处将候选文本与发送前快照比对：
    * 高度重叠（互相包含且旧文本足够长）即判定为旧内容。
+   *
+   * 注意：快照文本来自 innerText，轮询文本来自 textContent，折叠内容与
+   * 空白渲染差异会使严格子串匹配失效（旧版 bug 根因之一），
+   * 故比较前双方都做空白归一化（squash）。
    * @param {string} text 待判定文本
    * @param {Map<Element, string>} snapshot 发送前的文本快照
    * @returns {boolean}
@@ -770,17 +795,71 @@
     if (!text || text.length < 50) {
       return false;
     }
+    var squashed = squash(text);
+    if (squashed.length < 50) {
+      return false;
+    }
     var iter = snapshot.values();
     var item = iter.next();
     while (!item.done) {
       var old = item.value;
-      // 旧文本需足够长（>50 字符）才可信，避免页面零星短语误判
-      if (old && old.length > 50 && (old.indexOf(text) !== -1 || text.indexOf(old) !== -1)) {
-        return true;
+      // 旧文本需足够长（squash 后 >50 字符）才可信，避免页面零星短语误判
+      if (old && old.length > 50) {
+        var oldSquashed = squash(old);
+        if (oldSquashed.length > 50 &&
+          (oldSquashed.indexOf(squashed) !== -1 || squashed.indexOf(oldSquashed) !== -1)) {
+          return true;
+        }
       }
       item = iter.next();
     }
     return false;
+  }
+
+  /**
+   * 去除文本中的全部空白字符，用于跨文本源（innerText / textContent）的宽松比较。
+   * 两种读取方式在折叠内容、换行、连续空白上存在系统性差异，
+   * 严格子串匹配会因此失效；squash 后比较可消除这类噪音差异。
+   * @param {string} text 原始文本
+   * @returns {string} 仅保留非空白字符的文本
+   */
+  function squash(text) {
+    return String(text || '').replace(/\s+/g, '');
+  }
+
+  /**
+   * 宽松前缀剥离：判断 oldText 是否为 text 的「前缀」（忽略空白差异）。
+   * 通过双指针逐字符消耗实现：oldText 与 text 各自跳过空白后逐字符比对，
+   * 全部匹配成功时返回旧内容在 text 中的结束位置（下标），不匹配返回 -1。
+   * 用途：容器为虚拟列表重建的新节点（不在快照中）时，精确基线缺失，
+   * 用该函数从快照文本中找到「旧回复前缀」并剥掉，只保留本轮新回复。
+   * @param {string} text 当前读取的完整文本
+   * @param {string} oldText 发送前的旧文本（来自快照）
+   * @returns {number} 旧内容在 text 中的结束下标；不是前缀返回 -1
+   */
+  function stalePrefixEnd(text, oldText) {
+    if (!text || !oldText || oldText.length < 50) {
+      return -1;
+    }
+    var ti = 0;
+    var oi = 0;
+    while (oi < oldText.length) {
+      var oc = oldText.charAt(oi);
+      if (/\s/.test(oc)) {
+        oi += 1;
+        continue;
+      }
+      // text 侧跳过空白，对齐 oldText 的下一个非空白字符
+      while (ti < text.length && /\s/.test(text.charAt(ti))) {
+        ti += 1;
+      }
+      if (ti >= text.length || text.charAt(ti) !== oc) {
+        return -1;
+      }
+      ti += 1;
+      oi += 1;
+    }
+    return ti;
   }
 
   /**
@@ -925,6 +1004,8 @@
     if (element && job.baselineEl !== element) {
       job.baselineEl = element;
       job.baselineText = job.snapshot.has(element) ? job.snapshot.get(element) : '';
+      // 容器切换后旧前缀不再适用，宽松基线需重新探测
+      job.looseBaseline = null;
       if (job.baselineText) {
         log('容器切换，重新记录基线文本 ' + job.baselineText.length + ' 字符', 'debug');
       }
@@ -942,6 +1023,48 @@
       } else {
         job.baselineText = ''; // 基线失效，后续轮次不再剥离
         log('基线剥离后为空，判定基线失效，回退全文', 'warn');
+      }
+    } else if (text && text.length >= 50) {
+      // 宽松基线剥离兜底：精确前缀匹配失败时（基线为空，或快照文本来自
+      // innerText 而当前文本来自 textContent，空白/折叠差异导致前缀错位），
+      // 用「忽略空白差异」的双指针匹配从快照文本中找出旧内容前缀并剥掉。
+      // 典型场景：虚拟列表重建节点，含旧回复的消息列表容器不在快照中，
+      // 旧版此时会把「旧用户气泡(你好+Instant徽标)+旧回复+新回复」整段返回。
+      var looseBaseline = job.looseBaseline;
+      if (looseBaseline !== '') {
+        // 首次进入时尚未确定宽松基线：遍历快照找「是当前文本前缀」的最长旧文本
+        if (!looseBaseline) {
+          var bestEnd = -1;
+          var bestOld = null;
+          var iter = job.snapshot.values();
+          var item = iter.next();
+          while (!item.done) {
+            var oldText = item.value;
+            if (oldText && oldText.length > 50) {
+              var end = stalePrefixEnd(text, oldText);
+              if (end > bestEnd) {
+                bestEnd = end;
+                bestOld = oldText;
+              }
+            }
+            item = iter.next();
+          }
+          looseBaseline = bestOld || '';
+          job.looseBaseline = looseBaseline;
+          if (bestEnd > 0) {
+            log('精确基线未命中，宽松匹配到旧内容前缀 ' + bestEnd + ' 字符，剥离', 'debug');
+          }
+        }
+        if (looseBaseline) {
+          var looseEnd = stalePrefixEnd(text, looseBaseline);
+          // 剥离后必须仍有剩余内容，否则视为基线失效（如新回复恰好复述旧文）
+          if (looseEnd > 0 && looseEnd < text.length) {
+            text = text.slice(looseEnd).trim();
+          } else if (looseEnd >= text.length) {
+            job.looseBaseline = '';
+            log('宽松基线覆盖全文，判定基线失效，回退全文', 'warn');
+          }
+        }
       }
     }
     // 无效内容拦截（必须在 prompt 剥离之前，用原始 text 判断）：
@@ -964,6 +1087,7 @@
         job.element = null;
         job.baselineEl = null;
         job.baselineText = null;
+        job.looseBaseline = null;
       }
       job.stablePolls = 0;
       text = '';
@@ -1012,6 +1136,7 @@
         job.element = null;
         job.baselineEl = null;
         job.baselineText = null;
+        job.looseBaseline = null;
         job.lastText = '';
         job.hasContent = false;
         job.stablePolls = 0;
@@ -1129,6 +1254,7 @@
       signalReported: false,
       staleRetries: 0,
       noiseLoggedText: '',
+      looseBaseline: null,
       timer: null
     };
 
