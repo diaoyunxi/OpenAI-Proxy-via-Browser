@@ -756,9 +756,12 @@
     // DeepSeek 回复底部免责声明（常与模式徽标连写成一个片段）
     /(?:DeepThink|Think|Search|R1|V3)\s*Search\s*AI-generated, for reference only/gi,
     /AI-generated, for reference only/gi,
-    // DeepSeek 消息头部的模式徽标（仅整行独立出现时才删，防止误删正文单词）；
-    // Instant 为非思考模式徽标，同样只按整行匹配避免误删正文单词
-    /^\s*-?\s*(DeepThinkSearch|DeepThink|ThinkSearch|Instant)\s*$/gm,
+    // DeepSeek 消息头部的模式徽标：仅作为「消息头部徽标」时删除，避免误删正文中
+    // 恰为独立一行的同名单词（如模型回复了一行 "Instant"）。只匹配文本最开头或
+    // </think> 之后紧跟的独立行，不删正文深处的独立行；行内徽标（「你好Instant」）
+    // 由 isPromptEcho 作为用户回声拦截，此处不处理。
+    /^\s*-?\s*(DeepThinkSearch|DeepThink|ThinkSearch|Instant)\s*(?:\r?\n|$)/,
+    /<\/think>\s*-?\s*(DeepThinkSearch|DeepThink|ThinkSearch|Instant)\s*(?:\r?\n|$)/,
     // 常见对话操作按钮行
     /^\s*(Copy code|复制代码|重新生成|Regenerate|Good response|Bad response)\s*$/gm
   ];
@@ -837,9 +840,31 @@
    * @param {string} oldText 发送前的旧文本（来自快照）
    * @returns {number} 旧内容在 text 中的结束下标；不是前缀返回 -1
    */
+  /**
+   * 宽松前缀剥离：判断 oldText 是否为 text 的「前缀」（忽略空白与 <...> 标签差异）。
+   * 通过双指针逐字符消耗实现：oldText 与 text 各自跳过空白与标签后逐字符比对，
+   * 全部匹配成功时返回旧内容在 text 中的结束位置（下标），不匹配返回 -1。
+   * 跳过标签是为兼容「当前文本（readReplyText 含 <think> 标签）」与
+   * 「快照基线（readText 纯文本）」的表示差异，保证思考块回复也能正确剥离旧前缀。
+   * @param {string} text 当前读取的完整文本
+   * @param {string} oldText 发送前的旧文本（来自快照）
+   * @returns {number} 旧内容在 text 中的结束下标；不是前缀返回 -1
+   */
   function stalePrefixEnd(text, oldText) {
-    if (!text || !oldText || oldText.length < 50) {
+    if (!text || !oldText || oldText.length < 30) {
       return -1;
+    }
+    // 跳过 <...> 标签片段（如 readReplyText 输出的 <think>/</think>），
+    // 使含标签的当前文本与纯文本基线能跨表示对齐比较。
+    function skipTags(str, i) {
+      while (i < str.length && str.charAt(i) === '<') {
+        var gt = str.indexOf('>', i);
+        if (gt === -1) {
+          break;
+        }
+        i = gt + 1;
+      }
+      return i;
     }
     var ti = 0;
     var oi = 0;
@@ -849,7 +874,8 @@
         oi += 1;
         continue;
       }
-      // text 侧跳过空白，对齐 oldText 的下一个非空白字符
+      // text 侧跳过空白与标签，对齐 oldText 的下一个非空白字符
+      ti = skipTags(text, ti);
       while (ti < text.length && /\s/.test(text.charAt(ti))) {
         ti += 1;
       }
@@ -860,6 +886,61 @@
       oi += 1;
     }
     return ti;
+  }
+
+  /**
+   * 宽松基线剥离：精确前缀（job.baselineText）未命中时，用「忽略空白与标签差异」
+   * 的双指针匹配从快照中找出旧内容前缀并剥掉，只保留本轮新回复。
+   * 容器为虚拟列表重建的新节点（不在快照中）时，精确基线缺失，靠此兜底。
+   * 注意：old-only poll（当前文本恰好等于旧内容全文）时返回 '' 且不禁用后续匹配，
+   * 保留 job.looseBaseline 等新回复追加后再剥离，避免第二轮回复混入旧回复。
+   * @param {string} text 当前 readReplyText 输出
+   * @param {object} job 当前任务
+   * @returns {string} 剥离旧前缀后的文本；old-only poll 时返回 ''
+   */
+  function stripLooseBaseline(text, job) {
+    if (!text || text.length < 50) {
+      return text;
+    }
+    var looseBaseline = job.looseBaseline;
+    if (looseBaseline === '') {
+      return text; // 已判定基线失效，跳过
+    }
+    if (!looseBaseline) {
+      // 首次进入：遍历快照找「是当前文本前缀」的最长旧文本
+      var bestEnd = -1;
+      var bestOld = null;
+      var iter = job.snapshot.values();
+      var item = iter.next();
+      while (!item.done) {
+        var oldText = item.value;
+        if (oldText && oldText.length > 30) {
+          var end = stalePrefixEnd(text, oldText);
+          if (end > bestEnd) {
+            bestEnd = end;
+            bestOld = oldText;
+          }
+        }
+        item = iter.next();
+      }
+      looseBaseline = bestOld || '';
+      job.looseBaseline = looseBaseline;
+      if (bestEnd > 0) {
+        log('精确基线未命中，宽松匹配到旧内容前缀 ' + bestEnd + ' 字符，剥离', 'debug');
+      }
+    }
+    if (looseBaseline) {
+      var looseEnd = stalePrefixEnd(text, looseBaseline);
+      // 剥离后必须仍有剩余内容，否则视为 old-only poll（新回复尚未到达）
+      if (looseEnd > 0 && looseEnd < text.length) {
+        return text.slice(looseEnd).trim();
+      } else if (looseEnd >= text.length) {
+        // 旧内容覆盖全文：保留基线、本轮不返回，避免永久禁用后续宽松匹配
+        log('宽松基线覆盖全文（新回复未到达），保留基线，本轮不返回', 'debug');
+        return '';
+      }
+    }
+    return text;
   }
 
   /**
@@ -1025,47 +1106,9 @@
         log('基线剥离后为空，判定基线失效，回退全文', 'warn');
       }
     } else if (text && text.length >= 50) {
-      // 宽松基线剥离兜底：精确前缀匹配失败时（基线为空，或快照文本来自
-      // innerText 而当前文本来自 textContent，空白/折叠差异导致前缀错位），
-      // 用「忽略空白差异」的双指针匹配从快照文本中找出旧内容前缀并剥掉。
-      // 典型场景：虚拟列表重建节点，含旧回复的消息列表容器不在快照中，
-      // 旧版此时会把「旧用户气泡(你好+Instant徽标)+旧回复+新回复」整段返回。
-      var looseBaseline = job.looseBaseline;
-      if (looseBaseline !== '') {
-        // 首次进入时尚未确定宽松基线：遍历快照找「是当前文本前缀」的最长旧文本
-        if (!looseBaseline) {
-          var bestEnd = -1;
-          var bestOld = null;
-          var iter = job.snapshot.values();
-          var item = iter.next();
-          while (!item.done) {
-            var oldText = item.value;
-            if (oldText && oldText.length > 50) {
-              var end = stalePrefixEnd(text, oldText);
-              if (end > bestEnd) {
-                bestEnd = end;
-                bestOld = oldText;
-              }
-            }
-            item = iter.next();
-          }
-          looseBaseline = bestOld || '';
-          job.looseBaseline = looseBaseline;
-          if (bestEnd > 0) {
-            log('精确基线未命中，宽松匹配到旧内容前缀 ' + bestEnd + ' 字符，剥离', 'debug');
-          }
-        }
-        if (looseBaseline) {
-          var looseEnd = stalePrefixEnd(text, looseBaseline);
-          // 剥离后必须仍有剩余内容，否则视为基线失效（如新回复恰好复述旧文）
-          if (looseEnd > 0 && looseEnd < text.length) {
-            text = text.slice(looseEnd).trim();
-          } else if (looseEnd >= text.length) {
-            job.looseBaseline = '';
-            log('宽松基线覆盖全文，判定基线失效，回退全文', 'warn');
-          }
-        }
-      }
+      // 宽松基线剥离兜底（逻辑见 stripLooseBaseline）：精确前缀未命中时从快照找
+      // 旧内容前缀剥掉，只保留本轮新回复；old-only poll 返回 '' 但不禁用后续匹配。
+      text = stripLooseBaseline(text, job);
     }
     // 无效内容拦截（必须在 prompt 剥离之前，用原始 text 判断）：
     // AI 回复开始前页面上有两类「假信号」会被误当回复容器锁定：
