@@ -22,8 +22,7 @@
     stablePollsAfterNet: 6, // 已收到流结束信号后，需连续 6 次轮询(约2.4s)文本无变化才算完成
     stablePollsDomOnly: 25, // 无网络信号时，需连续 25 次轮询(约10s)文本无变化才算完成
     startGraceMs: 3000,     // 任务开始后的最短观察时间，防止过早收尾
-    elementTimeoutMs: 15000, // 等待输入框/发送按钮出现的上限
-    snapshotDelayMs: 300     // 点击发送后，等待新消息容器渲染的时间
+    elementTimeoutMs: 15000 // 等待输入框/发送按钮出现的上限
   };
 
   /** 当前正在执行的任务；为 null 表示空闲 */
@@ -568,10 +567,11 @@
    *      从而选中粒度最细、最贴近真实回答的那个节点；
    *   3. 在剩余元素中按变化幅度与 DOM 深度排序取最优。
    *
-   * @param {Map<Element, string>} snapshot 发送前（或上一轮）的文本快照
+   * @param {Map<Element, string>} snapshot 发送前的文本快照
+   * @param {string} prompt 本次发送的 prompt 文本
    * @returns {Element|null} 命中的响应容器，未产生任何变化时返回 null
    */
-  function pickResponseElement(snapshot) {
+  function pickResponseElement(snapshot, prompt) {
     var candidates = collectCandidates();
     var changed = [];
 
@@ -589,6 +589,13 @@
         continue;
       }
       var text = readText(el);
+      // 排除「用户消息」元素：快照在发送前拍摄，发送后文本包含 prompt 的元素
+      // 是用户消息气泡或其祖先（含消息列表整页容器）。这类元素的变化全部来自
+      // prompt 本身，若不排除会被误选为响应容器（其文本=旧对话+prompt，无新回复）。
+      // 仅在 prompt 足够长（>20 字符）时启用，避免短 prompt 误伤正常回复。
+      if (prompt && prompt.length > 20 && text && text.indexOf(prompt) !== -1) {
+        continue;
+      }
       var previous = snapshot.has(el) ? snapshot.get(el) : '';
       // 内容完全一致（含两者皆为空串）视为无变化
       if (text === previous) {
@@ -811,7 +818,7 @@
       element = job.element;
     }
     if (!element) {
-      element = pickResponseElement(job.snapshot);
+      element = pickResponseElement(job.snapshot, job.prompt);
       job.element = element;
     }
     // 首次拿到容器时记录基线（无论来自用户配置选择器还是自动探测）：
@@ -932,6 +939,14 @@
 
     await sleep(150);
 
+    // 快照必须在「点击发送之前」拍摄：
+    //   - 旧版在发送后延迟 300ms 拍快照，第二轮起页面已热、新回复渲染极快，
+    //     部分甚至全部新回复会被误入快照，导致后续轮询判定「无变化」而提取失败；
+    //   - 提前拍摄后，用户消息气泡会成为「变化最大」的元素，
+    //     由 pickResponseElement 的 prompt 排除规则过滤（见该函数注释）。
+    var snapshot = snapshotTexts();
+    var promptText = String(payload.prompt || '');
+
     if (profile.sendSelector) {
       var button = await waitForElement(profile.sendSelector, 5000);
       if (!button) {
@@ -949,15 +964,14 @@
       pressEnter(input);
     }
 
-    await sleep(CFG.snapshotDelayMs);
-
     job = {
       requestId: requestId,
       profile: profile,
+      prompt: promptText,
       startedAt: Date.now(),
       lastChangeAt: Date.now(),
       timeoutMs: payload.timeoutMs || 180000,
-      snapshot: snapshotTexts(),
+      snapshot: snapshot,
       baselineText: null,
       lastText: '',
       hasContent: false,
