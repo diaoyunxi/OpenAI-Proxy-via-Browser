@@ -601,15 +601,10 @@
       if (el.closest && el.closest('nav,aside,header,[role="navigation"]')) {
         continue;
       }
-      // 排除「用户消息气泡」元素：其文本以 prompt 开头且总长与 prompt 相当。
-      // 注意不能用「包含 prompt 即排除」——模型在回复中引用/复述 prompt 原文
-      // （代码改写、JSON 处理等场景）是常态，包含式误杀会导致回复容器永远选不中。
-      // 祖先容器（旧对话+prompt+新回复）不以 prompt 开头，不受此规则影响，
-      // 其混入的 prompt 由 tick 中的前缀剥离兜底。
-      if (
-        prompt && prompt.length > 20 && text &&
-        text.indexOf(prompt) === 0 && text.length < prompt.length * 1.5
-      ) {
+      // 排除「用户消息气泡」元素：文本以 prompt 开头且只多少量余量（UI 标签）。
+      // 使用绝对余量（+30）而非倍数/长度门槛，兼容短 prompt（如「你好」）；
+      // 也不能用「包含 prompt 即排除」——模型复述 prompt 原文是常态，会误杀回复容器。
+      if (isPromptEcho(text, prompt)) {
         stats.promptLike += 1;
         continue;
       }
@@ -746,6 +741,47 @@
     // 常见对话操作按钮行
     /^\s*(Copy code|复制代码|重新生成|Regenerate|Good response|Bad response)\s*$/gm
   ];
+
+  /**
+   * 判断文本是否为「用户消息回声」：以 prompt 开头且总长只比 prompt 多一点余量。
+   * 用户消息气泡的文本 = prompt + 少量 UI 标签（如模式名 "Instant"），
+   * 而 AI 正常回复即使以 prompt 开头也会远超此长度。
+   * 使用绝对余量（而非倍数）以兼容短 prompt（如「你好」，仅 2 字符）。
+   * @param {string} text 待判定文本
+   * @param {string} prompt 本次发送的 prompt
+   * @returns {boolean}
+   */
+  function isPromptEcho(text, prompt) {
+    return !!prompt && !!text &&
+      text.indexOf(prompt) === 0 &&
+      text.length < prompt.length + 30;
+  }
+
+  /**
+   * 判断文本是否为「发送前已存在的旧内容」。
+   * 虚拟列表重建节点后，含旧回复全文的容器不在快照中（previous=''），
+   * 其全部文本会被误当作新内容。此处将候选文本与发送前快照比对：
+   * 高度重叠（互相包含且旧文本足够长）即判定为旧内容。
+   * @param {string} text 待判定文本
+   * @param {Map<Element, string>} snapshot 发送前的文本快照
+   * @returns {boolean}
+   */
+  function isStaleContent(text, snapshot) {
+    if (!text || text.length < 50) {
+      return false;
+    }
+    var iter = snapshot.values();
+    var item = iter.next();
+    while (!item.done) {
+      var old = item.value;
+      // 旧文本需足够长（>50 字符）才可信，避免页面零星短语误判
+      if (old && old.length > 50 && (old.indexOf(text) !== -1 || text.indexOf(old) !== -1)) {
+        return true;
+      }
+      item = iter.next();
+    }
+    return false;
+  }
 
   /**
    * 清理回复文本，仅移除确定性的页面噪音。
@@ -899,8 +935,22 @@
     }
     // prompt 前缀剥离：若最终选中的是「累积型祖先容器」（文本=旧对话+prompt+新回复），
     // 基线剥掉旧对话后开头残留的是本次 prompt，需一并剥掉才是纯回复。
-    if (text && job.prompt && job.prompt.length > 20 && text.indexOf(job.prompt) === 0) {
+    if (text && job.prompt && text.indexOf(job.prompt) === 0) {
       text = text.slice(job.prompt.length).trim();
+    }
+    // 用户消息回声校验：若剥离后仍是「prompt+少量UI标签」（如「你好Instant」），
+    // 说明选中的是用户消息气泡而非 AI 回复，视为无效内容：
+    // 清空锁定容器强制重探，且不计入稳定（否则 AI 未回复时用户消息静止
+    // 会被误判为完成，提前把 prompt 当回复返回）。
+    if (text && isPromptEcho(text, job.prompt)) {
+      if (job.element) {
+        log('命中的是用户消息回声，丢弃并重探容器', 'warn');
+        job.element = null;
+        job.baselineEl = null;
+        job.baselineText = null;
+      }
+      job.stablePolls = 0;
+      return;
     }
     if (text && text !== job.lastText) {
       // DOM 是累积文本，通常只需取新增部分；若发生重排则整段替换
@@ -931,6 +981,21 @@
     //   - 无网络信号站点：需很长连续稳定窗口，容忍深度思考的自然长停顿，避免提前截断。
     var requiredPolls = job.netDone ? CFG.stablePollsAfterNet : CFG.stablePollsDomOnly;
     if (job.hasContent && job.stablePolls >= requiredPolls && elapsed >= CFG.startGraceMs) {
+      // 旧内容校验：虚拟列表重建节点后，含旧回复全文的新节点不在快照中，
+      // 其文本会被整体误当作新内容（表现为「第二次返回第一次的回复」）。
+      // 结束前与发送前快照比对，高度重叠则判定为旧内容：重探容器再给一次机会，
+      // 重试次数用尽后接受（避免陷入死等）。
+      if (isStaleContent(job.lastText, job.snapshot) && job.staleRetries < 2) {
+        job.staleRetries += 1;
+        log('稳定内容与发送前页面高度重叠，疑似旧回复，重探容器（第 ' + job.staleRetries + ' 次）', 'warn');
+        job.element = null;
+        job.baselineEl = null;
+        job.baselineText = null;
+        job.lastText = '';
+        job.hasContent = false;
+        job.stablePolls = 0;
+        return;
+      }
       finishJob('stop');
       return;
     }
@@ -1041,6 +1106,7 @@
       stablePolls: 0,
       element: null,
       signalReported: false,
+      staleRetries: 0,
       timer: null
     };
 
