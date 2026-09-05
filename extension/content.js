@@ -694,7 +694,14 @@
   // ------------------------------------------------------------------ 文本清理工具
 
   /**
-   * 清理回复文本，移除系统标记、代码块、PowerShell提示符等噪音。
+   * 清理回复文本，仅移除确定性的页面噪音。
+   *
+   * 注意：本扩展是通用 OpenAI API 代理，模型回复中的代码块、JSON、引用块
+   * 都属于「回复本体」，绝不能删除（旧版删除 ``` 代码块导致模型输出
+   * JSON/代码时服务端收到空串）。此处只清理与页面渲染相关的标记：
+   *   - <system>/<user> 标签包裹的内容（部分站点用来渲染消息角色）；
+   *   - 多余空白归一化。
+   *
    * @param {string} text 原始文本
    * @returns {string} 清理后的文本
    */
@@ -707,14 +714,6 @@
     out = out.replace(/<system>\n?[\s\S]*?<\/system>/gi, '');
     // 移除 user 标签包裹的内容
     out = out.replace(/<user>\n?[\s\S]*?<\/user>/gi, '');
-    // 移除代码块（包括 language-json 等标记）
-    out = out.replace(/```(?:json)?\s*\n?[\s\S]*?```/gi, '');
-    // 移除 PowerShell 提示符行
-    out = out.replace(/PS\s+[^\n]+>.*(?:\n|$)/g, '');
-    // 移除引用块前缀
-    out = out.replace(/^\s*[>+]\s+.*(?:\n|$)/gm, '');
-    // 移除 "At line:" 后面的内容
-    out = out.replace(/At line:[\s\S]*?\n/g, '');
     // 清理多余空白
     out = out.replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
     return out;
@@ -829,7 +828,15 @@
     // 基线剥离：readReplyText 的输出若以基线（旧回复）为前缀，则切掉前缀只保留新内容；
     // 前缀不匹配（容器被整体替换、或归一化导致错位）时保留全量，宁可多带旧文也不丢新回复。
     if (text && job.baselineText && text.indexOf(job.baselineText) === 0) {
-      text = text.slice(job.baselineText.length).trim();
+      var stripped = text.slice(job.baselineText.length).trim();
+      // 防御：剥离后为空说明基线恰好等于当前全文（虚拟列表整段重渲染等场景），
+      // 此时基线已失效，回退使用原文，避免把新回复整段剥掉导致提取为空
+      if (stripped) {
+        text = stripped;
+      } else {
+        job.baselineText = ''; // 基线失效，后续轮次不再剥离
+        log('基线剥离后为空，判定基线失效，回退全文', 'warn');
+      }
     }
     if (text && text !== job.lastText) {
       // DOM 是累积文本，通常只需取新增部分；若发生重排则整段替换
