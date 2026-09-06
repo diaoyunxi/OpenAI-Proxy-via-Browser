@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import json
+import socket
 import urllib.error
 import urllib.request
 from typing import Any, Dict, Iterator, List, Optional
@@ -55,6 +56,12 @@ class OAPClient:
             raise OAPError(f"网关返回 HTTP {e.code}: {body[:300]}") from e
         except urllib.error.URLError as e:
             raise OAPError(f"无法连接网关 {url}: {e.reason}") from e
+        except (TimeoutError, socket.timeout) as e:
+            raise OAPError(
+                f"网关请求超时（超过 {self.timeout} 秒未返回完整响应）。"
+                "请确认目标浏览器扩展已就绪并正被正常调用，"
+                "或适当调大 --timeout 后重试。"
+            ) from e
 
     # ---- 高层接口 ----
     def health(self) -> Dict[str, Any]:
@@ -97,7 +104,14 @@ class OAPClient:
         resp = self._post("/v1/chat/completions", payload, extra_headers=headers, stream=stream)
         if stream:
             return iter_sse_events(resp)
-        body = resp.read().decode("utf-8")
+        try:
+            body = resp.read().decode("utf-8")
+        except (TimeoutError, socket.timeout) as e:
+            raise OAPError(
+                f"网关响应读取超时（超过 {self.timeout} 秒）。"
+                "请确认目标浏览器扩展已就绪并正被正常调用，"
+                "或适当调大 --timeout 后重试。"
+            ) from e
         try:
             return json.loads(body)
         except json.JSONDecodeError as e:
