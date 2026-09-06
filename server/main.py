@@ -38,6 +38,7 @@ from openai_compat import (
     sse_error_frame,
     sse_frame,
 )
+from prompt_files import ensure_prompt_files, load_system_prompt, render_prompt_template
 from protocol import (
     ERR_INVALID_REQUEST,
     PROTOCOL_VERSION,
@@ -62,8 +63,9 @@ bridge = BrowserBridge(CONFIG)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """应用生命周期管理：启动时拉起桥接层，关闭时回收资源。"""
+    """应用生命周期管理：启动时补齐提示词文件并拉起桥接层，关闭时回收资源。"""
     CONFIG.validate()
+    ensure_prompt_files()
     await bridge.start()
     logger.info("网关已启动：http://%s:%s", CONFIG.host, CONFIG.port)
     try:
@@ -93,9 +95,16 @@ if CONFIG.allow_cors_any:
 def build_prompt(request: ChatCompletionRequest) -> str:
     """把 messages 数组拼成一段可直接粘贴进网页输入框的文本。
 
-    采用 XML 标签包裹格式，避免裸前缀（如 ``[用户]``）被模型当成内容：
-      - 所有 ``role: system`` 消息合并进 ``<system>...</system>``（用户在扩展/请求中设置的系统提示词）；
-      - 用户与助手消息按 ``prompt_mode`` 合并进 ``<user>...</user>``。
+    文本的最终结构由仓库根目录的 ``prompt_template.txt`` 决定（支持
+    ``{system}`` / ``{user}`` 占位符与 ``{{#system}}`` / ``{{#user}}`` 条件块），
+    修改该文件后下一次请求即生效，无需重启网关；文件缺失或为空时回退到内置的
+    等价模板（XML 标签包裹，避免裸前缀如 ``[用户]`` 被模型当成内容）。
+
+    取值规则：
+      - 所有 ``role: system`` 消息合并为 ``{system}``；
+      - 用户与助手消息按 ``prompt_mode`` 合并为 ``{user}``；
+      - 请求未携带任何 system 消息时，自动注入 ``system_prompt.txt`` 的内容
+        （该文件留空则表示不注入）。
 
     :param request: 客户端请求体
     :return: 拼接后的提示词；无有效内容时返回空串
@@ -123,15 +132,17 @@ def build_prompt(request: ChatCompletionRequest) -> str:
                 break
         user_parts = [last_user] if last_user else []
 
-    system_block = ""
-    if system_parts:
-        system_block = "<system>\n" + "\n\n".join(system_parts) + "\n</system>"
+    if not any(part.strip() for part in user_parts):
+        # 没有任何用户/助手内容，本次请求无实际内容可发送
+        return ""
 
-    user_block = ""
-    if user_parts:
-        user_block = "<user>\n" + "\n\n".join(user_parts) + "\n</user>"
+    if not system_parts:
+        # 请求未指定系统提示词时，注入默认提示词（文件为空则不注入）
+        default_system = load_system_prompt()
+        if default_system:
+            system_parts.append(default_system)
 
-    return system_block + user_block
+    return render_prompt_template("\n\n".join(system_parts), "\n\n".join(user_parts))
 
 
 def resolve_target_host(request: ChatCompletionRequest, headers: Any) -> str:

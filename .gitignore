@@ -22,3 +22,9 @@ Thumbs.db
 
 # 日志
 *.log
+
+# 提示词配置（首次运行时自动生成，各人自定义内容，不入库）
+/prompt_template.txt
+/system_prompt.txt
+/agent_system_prompt.txt
+/tool_call_format.txt

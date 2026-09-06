@@ -14,6 +14,7 @@ from typing import List
 
 from .agent import Agent
 from .oap_client import OAPClient, OAPError
+from .prompt_files import ensure_prompt_files, load_agent_system_prompt
 from .tools import BUILTIN_TOOLS, list_tool_specs
 
 
@@ -80,11 +81,21 @@ def _paint_think(text: str) -> str:
 
 
 def main(argv: List[str] = None) -> int:
+    # 首次运行时补齐缺失的提示词文件（已存在的一律不动）
+    created = ensure_prompt_files()
+    if created:
+        print(_paint(C_CYAN, "[提示词]") + " 已生成默认提示词文件："
+              + "、".join(path.name for path in created))
+
     parser = argparse.ArgumentParser(description="OpenAI-Proxy 自研 agents 客户端（零依赖）")
     parser.add_argument("--base-url", default="http://127.0.0.1:8080", help="网关地址")
     parser.add_argument("--host", default=None, help="目标站点主机，如 chat.openai.com")
     parser.add_argument("--model", default="browser-proxy")
-    parser.add_argument("--system", default="你是一个有用的智能助手，善于使用工具完成任务。")
+    parser.add_argument(
+        "--system",
+        default=load_agent_system_prompt(),
+        help="系统提示词；默认读取仓库根目录 agent_system_prompt.txt",
+    )
     parser.add_argument("--max-iterations", type=int, default=8, help="单轮对话最大工具循环次数")
     parser.add_argument("--timeout", type=int, default=180, help="单次网关请求超时（秒）")
     parser.add_argument("--verbose", action="store_true", help="显示工具调用过程")

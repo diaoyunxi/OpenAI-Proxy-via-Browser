@@ -206,6 +206,7 @@ OpenAI-Proxy-via-Browser/
 │   ├── protocol.py          # 网关↔扩展消息协议与错误码
 │   ├── schemas.py           # 请求体 Pydantic 模型
 │   ├── config.py            # 环境变量驱动的运行时配置
+│   ├── prompt_files.py      # 提示词 txt 热加载与模板渲染
 │   └── requirements.txt
 ├── extension/               # Chrome 扩展
 │   ├── manifest.json
@@ -219,10 +220,15 @@ OpenAI-Proxy-via-Browser/
 │   ├── sse.py              # SSE 流式解析
 │   ├── tools.py            # 内置工具（shell/read_file/write_file/list_dir/http_request）
 │   ├── prompts.py          # 工具说明渲染进系统提示词
+│   ├── prompt_files.py     # 提示词 txt 热加载（零依赖）
 │   ├── agent.py            # 多轮对话 + 工具调用循环
 │   ├── cli.py              # 命令行交互 demo
 │   └── README.md           # 客户端使用文档
 ├── tools/make_icons.py      # 用标准库生成扩展图标
+├── prompt_template.txt      # 服务端消息包装模板（自动生成·不入库·热加载）
+├── system_prompt.txt        # 服务端默认系统提示词（自动生成·不入库·热加载）
+├── agent_system_prompt.txt  # 客户端 Agent 默认系统提示词（自动生成·不入库·热加载）
+├── tool_call_format.txt     # 客户端工具调用 JSON 约定（自动生成·不入库·热加载）
 ├── 可行性分析.md            # 原方案与难点分析
 ├── chrome扩展规范.md        # Manifest V3 规范速查
 └── README.md
@@ -311,5 +317,55 @@ curl -N -X POST http://127.0.0.1:8080/v1/chat/completions \
 - **文本源仅 DOM**：网络通道仅用于结束判定；如需做严格的 token 级流式（如打字机效果 + 复制按钮），后续可启用 `textSource: 'network'` 并为每个站点配置 JSON 提取路径。
 - **`chrome.debugger` 警告横幅**：仅在降级路径下出现，会占用浏览器顶部一行（无法通过 API 抑制，只能在启动浏览器时加 `--silent-debugger-extension-api`）。
 - **响应容器自动探测是启发式**：极端页面结构下可能选错容器，建议在弹窗里手动指定。
+
+### 9.6 提示词配置（根目录 .txt，热加载）
+
+所有「发给 AI 的提示词」都已从代码里剥离到仓库根目录的 4 个 `.txt` 文件，
+直接编辑即可，**无需重启服务**：每次请求只对文件做一次 `stat`，按修改时间判断
+是否需要重新读取，未变化则复用缓存。
+
+| 文件 | 作用 | 使用方 |
+| :--- | :--- | :--- |
+| `prompt_template.txt` | 消息包装模板：决定 messages 拼成什么文本后再粘贴进网页输入框 | 服务端 `server/main.py` |
+| `system_prompt.txt` | 默认系统提示词：请求未携带 `role: system` 消息时自动注入 | 服务端 `server/main.py` |
+| `agent_system_prompt.txt` | Agent 默认系统提示词 | 客户端 `client/cli.py`（`--system` 默认值） |
+| `tool_call_format.txt` | 工具调用 JSON 格式约定 | 客户端 `client/prompts.py` |
+
+**文件来源**：这 4 个文件**不纳入版本控制**（已写入 `.gitignore`）。首次运行客户端
+CLI（`python -m client.cli`）或启动网关时会自动生成；之后可随意编辑，程序只会补齐
+缺失的文件，不会覆盖已有内容。
+
+**容错策略**：任一文件被删除、无法读取或内容为空时，自动回退到代码内置的等价内容，
+并只告警一次，服务照常启动与运行；下次启动时再补回一份默认文件。
+
+#### prompt_template.txt 语法
+
+- 占位符：`{system}`（所有 system 消息合并）、`{user}`（所有 user / assistant 消息合并）；
+- 条件块：`{{#system}} … {{/system}}`、`{{#user}} … {{/user}}`，起止标签各占一行，
+  对应内容为空时整块丢弃（**不支持嵌套**）；
+- 注释行：以 `#` 开头的行不发送给模型；
+- 连续 3 个以上换行会被压缩为 2 个。
+
+默认模板的渲染结果：
+
+```
+<system>
+{system 内容}
+</system>
+<user>
+{user 内容}
+</user>
+```
+
+想改成别的写法（如 `角色设定：{system}` / `问题：{user}`）直接改文件即可。
+**注意**：若把 `<system>` / `<user>` 标签换成其它标记，请同步检查扩展侧
+`extension/content.js` 的 `cleanReplyText()` 清理正则，否则包装标签可能被当成
+回答内容回传。
+
+#### system_prompt.txt 说明
+
+- 请求中**已带** `role: system` 消息时，以请求为准，不注入本文件；
+- 请求**没有** system 消息时才注入本文件内容；
+- 把本文件清空（或删除）即可恢复「完全不注入默认系统提示词」的原始行为。
 
 # 仅供学习，请勿用于商业用途，出事概不负责

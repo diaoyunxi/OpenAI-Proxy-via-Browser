@@ -82,7 +82,26 @@ Agent.parse_tool_calls()  ← 关键：在客户端侧解析
 - 约定的 JSON 格式：`{"tool": "<工具名>", "args": {<参数字典>}}`；多个工具用数组：
   `[{"tool":"...","args":{...}}, {"tool":"...","args":{...}}]`。
 
-## 5. 内置工具
+## 5. 提示词配置文件（可自由更改）
+
+客户端用到的两段提示词已外置到**仓库根目录**的 `.txt` 文件，**改完即生效**
+（热加载，无需重启；文件缺失或为空时回退到代码内置默认值）：
+
+| 文件 | 作用 | 生效位置 |
+| :--- | :--- | :--- |
+| `agent_system_prompt.txt` | Agent 默认系统提示词 | `python -m client.cli` 的 `--system` 默认值 |
+| `tool_call_format.txt` | 工具调用 JSON 格式约定 | 每次请求注入 system 提示词末尾 |
+
+使用说明：
+
+- 这些文件**不纳入版本控制**（已写入 `.gitignore`），首次运行 `python -m client.cli`
+  会自动生成；CLI 也会顺带补齐服务端所需的 `prompt_template.txt` 与 `system_prompt.txt`；
+- 两个文件都是**纯内容文件**，不支持注释行，内容会原样发给模型；
+- 命令行仍可用 `--system "…"` 临时覆盖 `agent_system_prompt.txt`；
+- 修改 `tool_call_format.txt` 时请与 `client/agent.py` 的解析逻辑保持一致
+  （默认约定：裸 JSON、多工具为不换行数组；解析失败会触发一次格式纠正重试）。
+
+## 6. 内置工具
 
 | 工具名 | 说明 | 主要参数 |
 | :--- | :--- | :--- |
@@ -92,7 +111,7 @@ Agent.parse_tool_calls()  ← 关键：在客户端侧解析
 | `list_dir` | 列举目录 | `path`、`limit` |
 | `http_request` | 发送 HTTP 请求 | `url`、`method`、`body` |
 
-## 6. 扩展自定义工具
+## 7. 扩展自定义工具
 
 在 `client/tools.py` 里用 `@_tool` 装饰器注册即可，自动进入提示词与执行注册表：
 
@@ -111,7 +130,7 @@ def now():
 
 然后把它并入传给 `Agent` 的工具字典：`Agent(client, {**BUILTIN_TOOLS, "now": now}, ...)`。
 
-## 7. 安全提示
+## 8. 安全提示
 
 工具执行具有系统副作用（读写文件、执行命令、发起网络请求）。客户端已对 `shell` 做
 危险命令**提示性拦截**，但这**不是**绝对安全保证。请仅在可信环境使用，且不要把不可信
