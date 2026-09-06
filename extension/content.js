@@ -25,6 +25,17 @@
     elementTimeoutMs: 15000 // 等待输入框/发送按钮出现的上限
   };
 
+  /** 宽松基线探测所需的最小当前文本长度：低于此值匹配结果不可信 */
+  var LOOSE_PROBE_MIN_TEXT = 150;
+  /** 宽松基线探测可接受的最小剥离位置：低于此值极可能是巧合匹配。
+   *  取 100 是为了让「巧合命中」在概率上不可能——模型正文里偶然连续
+   *  复现上百字符的旧文本几乎不会发生，而真实的旧对话片段远长于此。 */
+  var LOOSE_PROBE_MIN_END = 100;
+  /** 宽松基线连续探测失败多少次后才判定「基线失效」并永久停止剥离 */
+  var LOOSE_PROBE_MAX_MISS = 6;
+  /** 旧内容占全文多大比例时才认定「本轮没有新回复」（结束判定用） */
+  var STALE_COVER_RATIO = 0.9;
+
   /** 当前正在执行的任务；为 null 表示空闲 */
   var job = null;
   /** 与 Service Worker 的持久连接 */
@@ -831,26 +842,23 @@
   }
 
   /**
-   * 宽松前缀剥离：判断 oldText 是否为 text 的「前缀」（忽略空白差异）。
-   * 通过双指针逐字符消耗实现：oldText 与 text 各自跳过空白后逐字符比对，
-   * 全部匹配成功时返回旧内容在 text 中的结束位置（下标），不匹配返回 -1。
-   * 用途：容器为虚拟列表重建的新节点（不在快照中）时，精确基线缺失，
-   * 用该函数从快照文本中找到「旧回复前缀」并剥掉，只保留本轮新回复。
-   * @param {string} text 当前读取的完整文本
-   * @param {string} oldText 发送前的旧文本（来自快照）
-   * @returns {number} 旧内容在 text 中的结束下标；不是前缀返回 -1
-   */
-  /**
    * 宽松前缀剥离：判断 oldText 是否为 text 的「前缀」（忽略空白与 <...> 标签差异）。
    * 通过双指针逐字符消耗实现：oldText 与 text 各自跳过空白与标签后逐字符比对，
    * 全部匹配成功时返回旧内容在 text 中的结束位置（下标），不匹配返回 -1。
    * 跳过标签是为兼容「当前文本（readReplyText 含 <think> 标签）」与
    * 「快照基线（readText 纯文本）」的表示差异，保证思考块回复也能正确剥离旧前缀。
+   *
+   * maxMismatch 允许若干字符不一致并在邻近窗口内重新对齐：
+   * 快照用 innerText、轮询用 textContent，二者在折叠内容、UI 徽标、免责声明上
+   * 存在系统性差异，严格匹配常因此整体失效（表现为「旧内容剥不掉」或
+   * 「剥离全部内容导致不返回」）。
+   *
    * @param {string} text 当前读取的完整文本
    * @param {string} oldText 发送前的旧文本（来自快照）
+   * @param {number} [maxMismatch] 允许的最大不一致字符数，默认 0（严格匹配）
    * @returns {number} 旧内容在 text 中的结束下标；不是前缀返回 -1
    */
-  function stalePrefixEnd(text, oldText) {
+  function stalePrefixEnd(text, oldText, maxMismatch) {
     if (!text || !oldText || oldText.length < 30) {
       return -1;
     }
@@ -866,6 +874,8 @@
       }
       return i;
     }
+    var limit = typeof maxMismatch === 'number' && maxMismatch > 0 ? maxMismatch : 0;
+    var mismatch = 0;
     var ti = 0;
     var oi = 0;
     while (oi < oldText.length) {
@@ -879,11 +889,36 @@
       while (ti < text.length && /\s/.test(text.charAt(ti))) {
         ti += 1;
       }
-      if (ti >= text.length || text.charAt(ti) !== oc) {
+      if (ti >= text.length) {
         return -1;
       }
-      ti += 1;
-      oi += 1;
+      if (text.charAt(ti) === oc) {
+        ti += 1;
+        oi += 1;
+        continue;
+      }
+      if (mismatch >= limit) {
+        return -1;
+      }
+      mismatch += 1;
+      // text 端可能在 oldText[oi] 之前插入了噪音片段（徽标、免责声明、标签差异等）。
+      // 在邻近窗口内前向搜索 oldText[oi] 的重新出现：
+      //   - 找到：视为 text 端多出的噪音，仅把 ti 对齐到该位置，oi 保持不动，
+      //     下一轮再用 oldText[oi] 与对齐后的 text[ti] 比较（关键：不能再 oi += 1，
+      //     否则会多消耗 oldText 一个字符，使后续整体错位、连续 mismatch 而误判失败）；
+      //   - 找不到：视为 oldText[oi] 自身被删，跳过该字符继续。
+      var jump = -1;
+      for (var k = ti + 1; k < ti + 9 && k < text.length; k += 1) {
+        if (text.charAt(k) === oc) {
+          jump = k;
+          break;
+        }
+      }
+      if (jump === -1) {
+        oi += 1;
+      } else {
+        ti = jump;
+      }
     }
     return ti;
   }
@@ -892,8 +927,16 @@
    * 宽松基线剥离：精确前缀（job.baselineText）未命中时，用「忽略空白与标签差异」
    * 的双指针匹配从快照中找出旧内容前缀并剥掉，只保留本轮新回复。
    * 容器为虚拟列表重建的新节点（不在快照中）时，精确基线缺失，靠此兜底。
-   * 注意：old-only poll（当前文本恰好等于旧内容全文）时返回 '' 且不禁用后续匹配，
-   * 保留 job.looseBaseline 等新回复追加后再剥离，避免第二轮回复混入旧回复。
+   *
+   * 三条重要约束（均为线上问题的修复点）：
+   *   1. 单次匹配失败不得永久禁用宽松剥离。文本过短或容器刚被整体替换时匹配不到
+   *      是常态，旧实现会把 job.looseBaseline 固化为 ''，导致后续再也剥不掉旧内容，
+   *      表现为「第二轮返回第一轮全文」；
+   *   2. old-only poll（当前文本被旧内容完全覆盖）返回 '' 必须有退出条件，
+   *      否则 hasContent 永远为 false，任务只能超时报 no_response，
+   *      表现为「AI 已回复但扩展不向 server 返回内容」；
+   *   3. 探测需等待文本达到一定长度，过早探测会锁死到一个过短的旧片段上。
+   *
    * @param {string} text 当前 readReplyText 输出
    * @param {object} job 当前任务
    * @returns {string} 剥离旧前缀后的文本；old-only poll 时返回 ''
@@ -907,40 +950,154 @@
       return text; // 已判定基线失效，跳过
     }
     if (!looseBaseline) {
-      // 首次进入：遍历快照找「是当前文本前缀」的最长旧文本
-      var bestEnd = -1;
-      var bestOld = null;
-      var iter = job.snapshot.values();
-      var item = iter.next();
-      while (!item.done) {
-        var oldText = item.value;
-        if (oldText && oldText.length > 30) {
-          var end = stalePrefixEnd(text, oldText);
-          if (end > bestEnd) {
-            bestEnd = end;
-            bestOld = oldText;
-          }
-        }
-        item = iter.next();
+      // 文本过短时匹配不可靠（易误命中页面零星短句并锁死基线），延后探测
+      if (text.length < LOOSE_PROBE_MIN_TEXT) {
+        return text;
       }
-      looseBaseline = bestOld || '';
-      job.looseBaseline = looseBaseline;
-      if (bestEnd > 0) {
+      // 首次进入：遍历快照找「是当前文本前缀」的最长旧文本
+      var found = findLongestStalePrefix(text, job.snapshot);
+      var bestEnd = found.end;
+      var bestOld = found.old;
+      // 只接受有意义的剥离位置，避免锁死在几个字符的巧合匹配上
+      if (bestEnd >= LOOSE_PROBE_MIN_END && bestOld) {
+        looseBaseline = bestOld;
+        job.looseBaseline = looseBaseline;
         log('精确基线未命中，宽松匹配到旧内容前缀 ' + bestEnd + ' 字符，剥离', 'debug');
+      } else {
+        job.looseMisses = (job.looseMisses || 0) + 1;
+        if (job.looseMisses >= LOOSE_PROBE_MAX_MISS) {
+          job.looseBaseline = '';
+          log('连续 ' + job.looseMisses + ' 次未匹配到旧内容前缀，判定基线失效，后续不再剥离', 'debug');
+        }
+        return text;
       }
     }
     if (looseBaseline) {
-      var looseEnd = stalePrefixEnd(text, looseBaseline);
+      var looseEnd = stalePrefixEnd(text, looseBaseline, mismatchLimit(looseBaseline.length));
       // 剥离后必须仍有剩余内容，否则视为 old-only poll（新回复尚未到达）
       if (looseEnd > 0 && looseEnd < text.length) {
+        job.looseEmptyPolls = 0;
         return text.slice(looseEnd).trim();
       } else if (looseEnd >= text.length) {
-        // 旧内容覆盖全文：保留基线、本轮不返回，避免永久禁用后续宽松匹配
+        // 旧内容覆盖全文：先保留基线等待新回复追加。但必须设退出条件——
+        // 容器整体被替换为「仅旧内容」的片段、或本轮回复确实就是这段文本时，
+        // 不退出会永远返回空串，任务只能等到超时。
+        job.looseEmptyPolls = (job.looseEmptyPolls || 0) + 1;
+        if (job.netDone || job.looseEmptyPolls >= CFG.stablePollsDomOnly) {
+          job.looseBaseline = '';
+          log('宽松基线持续覆盖全文（网络流已结束或等待超时），放弃剥离，避免长期不返回内容', 'warn');
+          return text;
+        }
         log('宽松基线覆盖全文（新回复未到达），保留基线，本轮不返回', 'debug');
         return '';
       }
     }
     return text;
+  }
+
+  /**
+   * 计算宽松前缀匹配的容差上限：按旧文本长度取 1%，并保证最小值。
+   * 用于吸收 innerText / textContent 之间的少量渲染差异，
+   * 同时避免容差过大导致剥离位置跑偏、误删本轮新回复。
+   * @param {number} length 旧文本长度
+   * @returns {number} 允许的最大不一致字符数
+   */
+  function mismatchLimit(length) {
+    return Math.max(4, Math.floor((length || 0) * 0.01));
+  }
+
+  /**
+   * 在快照中找出「是当前文本前缀」的最长旧文本。
+   * 供轮询期剥离（stripLooseBaseline）与结束前兜底（stripStaleBeforeFinish）共用。
+   * @param {string} text 当前文本
+   * @param {Map<Element, string>} snapshot 发送前的文本快照
+   * @returns {{end: number, old: string|null}} 旧内容结束下标与其文本；未命中时 end=-1
+   */
+  function findLongestStalePrefix(text, snapshot) {
+    var result = { end: -1, old: null };
+    if (!text || !snapshot) {
+      return result;
+    }
+    var iter = snapshot.values();
+    var item = iter.next();
+    while (!item.done) {
+      var oldText = item.value;
+      if (oldText && oldText.length > 30) {
+        var end = stalePrefixEnd(text, oldText, mismatchLimit(oldText.length));
+        if (end > result.end) {
+          result.end = end;
+          result.old = oldText;
+        }
+      }
+      item = iter.next();
+    }
+    return result;
+  }
+
+  /**
+   * 结束前的最后一次旧内容剥离兜底。
+   *
+   * 轮询期的剥离可能因容器切换、innerText/textContent 表示差异而失败，
+   * 累积文本里仍混着发送前的旧对话，直接返回就表现为「返回上一轮的回复」。
+   * 这里只在「旧内容占比确实很高」且「旧内容确实位于文本开头」时才剥离，
+   * 并要求剥离后仍留有足够长度，避免把本轮正文误删。
+   *
+   * @param {string} text 累积的回复文本
+   * @param {Map<Element, string>} snapshot 发送前的文本快照
+   * @returns {string} 剥离后的文本
+   */
+  function stripStaleBeforeFinish(text, snapshot) {
+    if (!text || text.length < 100) {
+      return text;
+    }
+    if (staleCoverRatio(text, snapshot) <= 0.5) {
+      return text; // 旧内容占比不高，说明主体是本轮新回复，不做处理
+    }
+    var found = findLongestStalePrefix(text, snapshot);
+    if (found.end > 0 && text.length - found.end >= 20) {
+      log('结束前兜底剥离旧内容 ' + found.end + ' 字符，保留 ' + (text.length - found.end) + ' 字符', 'warn');
+      return text.slice(found.end).trim();
+    }
+    return text;
+  }
+
+  /**
+   * 计算文本中「属于发送前旧内容」的占比（0~1）。
+   *
+   * 与 isStaleContent（只要互相包含即判为旧）不同，这里用占比刻画重叠程度：
+   * 累积型容器的文本 = 旧对话 + 本轮新回复，用包含关系判定必然命中，
+   * 会导致结束前把「旧+新」整体误判为旧回复并重探容器（抖动/返回错乱）；
+   * 只有旧内容几乎覆盖全文（≥ STALE_COVER_RATIO）时才应认定「没有新回复」。
+   *
+   * @param {string} text 待判定文本
+   * @param {Map<Element, string>} snapshot 发送前的文本快照
+   * @returns {number} 旧内容占文本的比例，0 表示无重叠
+   */
+  function staleCoverRatio(text, snapshot) {
+    if (!text || !snapshot) {
+      return 0;
+    }
+    var squashed = squash(text);
+    if (squashed.length < 50) {
+      return 0;
+    }
+    var best = 0;
+    var iter = snapshot.values();
+    var item = iter.next();
+    while (!item.done) {
+      var old = item.value;
+      if (old && old.length > 50) {
+        var oldSquashed = squash(old);
+        if (oldSquashed.length > 50 && squashed.indexOf(oldSquashed) !== -1) {
+          var ratio = oldSquashed.length / squashed.length;
+          if (ratio > best) {
+            best = ratio;
+          }
+        }
+      }
+      item = iter.next();
+    }
+    return best;
   }
 
   /**
@@ -992,6 +1149,11 @@
     }
     window.postMessage({ __oap: 'OAP_NET_CHANNEL', type: 'disarm' }, '*');
 
+    // 结束前最后一次旧内容剥离：轮询期的剥离可能因容器切换、表示差异而失败，
+    // 导致结果里混着发送前的旧对话（表现为「返回上一轮的回复」）。
+    if (current.hasContent && current.snapshot) {
+      current.lastText = stripStaleBeforeFinish(current.lastText, current.snapshot);
+    }
     // 清理回复文本，移除系统标记和噪音
     var text = cleanReplyText(current.lastText);
     // 兜底防线：锁定内容非空但清洗后为空，说明全是 UI 噪音碎片，
@@ -1084,15 +1246,40 @@
     // 必须在容器变化时重新记录（而非只在任务开始记录一次）。
     if (element && job.baselineEl !== element) {
       job.baselineEl = element;
-      job.baselineText = job.snapshot.has(element) ? job.snapshot.get(element) : '';
+      var snapText = job.snapshot.has(element) ? job.snapshot.get(element) : '';
       // 容器切换后旧前缀不再适用，宽松基线需重新探测
       job.looseBaseline = null;
-      if (job.baselineText) {
+      job.looseMisses = 0;
+      job.looseEmptyPolls = 0;
+      // 基线只有真的「贴在当前容器文本开头」时才具备剥离意义。
+      // SPA / 虚拟列表复用节点时，快照里的旧文本与当前文本可能完全不同序
+      // （整体替换、折叠思考块导致 innerText 与 textContent 差异），
+      // 此时强行记为基线会让后续剥离错位：轻则旧内容剥不掉，重则把本轮
+      // 新回复当成旧内容整段剥掉（表现为「AI 已回复但不向 server 返回」）。
+      // 故记录前先做同源校验（快照与当前文本都用 readText 读取），不匹配就放弃基线。
+      var currentPlain = readText(element);
+      if (snapText && currentPlain && currentPlain.indexOf(snapText) === 0) {
+        job.baselineText = snapText;
         log('容器切换，重新记录基线文本 ' + job.baselineText.length + ' 字符', 'debug');
+      } else {
+        job.baselineText = '';
+        if (snapText) {
+          log('容器切换，快照文本（' + snapText.length + ' 字符）不是当前内容前缀，' +
+            '放弃精确基线，改由宽松剥离兜底', 'debug');
+        }
       }
     }
 
     var text = readReplyText(element);
+    // 容器切换后若本轮已积累过内容，用「已积累的新回复」在新文本里定位：
+    // 新容器文本 = [旧内容][已积累的新回复][新增]，已积累部分必然存在其中，
+    // 用它定位比拿快照基线去猜更可靠，且不会误伤本轮已确认的内容。
+    if (text && job.hasContent && job.lastText && job.lastText.length > 20) {
+      var anchor = text.indexOf(job.lastText);
+      if (anchor > 0) {
+        text = text.slice(anchor).trim();
+      }
+    }
     // 基线剥离：readReplyText 的输出若以基线（旧回复）为前缀，则切掉前缀只保留新内容；
     // 前缀不匹配（容器被整体替换、或归一化导致错位）时保留全量，宁可多带旧文也不丢新回复。
     if (text && job.baselineText && text.indexOf(job.baselineText) === 0) {
@@ -1126,11 +1313,17 @@
         job.noiseLoggedText = text;
         log('命中的是用户消息回声或纯 UI 噪音，丢弃并重探容器', 'warn');
       }
-      if (job.element) {
+      // 仅在「尚未积累有效回复」时才清空容器重探：
+      // 已积累内容后再清空，会让容器在多个候选之间反复横跳，每轮读到的文本
+      // 都被当成噪音丢弃，hasContent 永远为假，最终只能超时报 no_response
+      // ——正是「AI 一直在输出，扩展却不向 server 返回内容」的成因之一。
+      if (!job.hasContent && job.element) {
         job.element = null;
         job.baselineEl = null;
         job.baselineText = null;
         job.looseBaseline = null;
+        job.looseMisses = 0;
+        job.looseEmptyPolls = 0;
       }
       job.stablePolls = 0;
       text = '';
@@ -1171,19 +1364,26 @@
     if (job.hasContent && job.stablePolls >= requiredPolls && elapsed >= CFG.startGraceMs) {
       // 旧内容校验：虚拟列表重建节点后，含旧回复全文的新节点不在快照中，
       // 其文本会被整体误当作新内容（表现为「第二次返回第一次的回复」）。
-      // 结束前与发送前快照比对，高度重叠则判定为旧内容：重探容器再给一次机会，
-      // 重试次数用尽后接受（避免陷入死等）。
-      if (isStaleContent(job.lastText, job.snapshot) && job.staleRetries < 2) {
-        job.staleRetries += 1;
-        log('稳定内容与发送前页面高度重叠，疑似旧回复，重探容器（第 ' + job.staleRetries + ' 次）', 'warn');
-        job.element = null;
-        job.baselineEl = null;
-        job.baselineText = null;
-        job.looseBaseline = null;
-        job.lastText = '';
-        job.hasContent = false;
-        job.stablePolls = 0;
-        return;
+      // 判定必须用「旧内容占比」而不是「是否互相包含」：累积型容器的文本天然是
+      // 旧对话 + 本轮回复，用包含关系判定必然命中，会把正常结果整体误判为旧回复，
+      // 反复重探容器并清空已积累内容，最终拖到超时（表现为不向 server 返回）。
+      if (job.staleRetries < 2) {
+        var coverRatio = staleCoverRatio(job.lastText, job.snapshot);
+        if (coverRatio >= STALE_COVER_RATIO) {
+          job.staleRetries += 1;
+          log('稳定内容 ' + Math.round(coverRatio * 100) + '% 与发送前页面重叠，疑似旧回复，重探容器（第 ' +
+            job.staleRetries + ' 次）', 'warn');
+          job.element = null;
+          job.baselineEl = null;
+          job.baselineText = null;
+          job.looseBaseline = null;
+          job.looseMisses = 0;
+          job.looseEmptyPolls = 0;
+          job.lastText = '';
+          job.hasContent = false;
+          job.stablePolls = 0;
+          return;
+        }
       }
       finishJob('stop');
       return;
@@ -1298,6 +1498,8 @@
       staleRetries: 0,
       noiseLoggedText: '',
       looseBaseline: null,
+      looseMisses: 0,
+      looseEmptyPolls: 0,
       timer: null
     };
 
