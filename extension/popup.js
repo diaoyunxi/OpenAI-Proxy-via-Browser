@@ -51,6 +51,10 @@ function renderProfile(profile) {
   $('send-selector').value = profile.sendSelector || '';
   $('response-selector').value = profile.responseSelector || '';
   $('url-pattern').value = profile.responseUrlPattern || '';
+  // 会话重置三项留空表示使用扩展内置默认值，故不做默认值填充
+  $('conv-more-selector').value = profile.convMoreSelector || '';
+  $('conv-delete-selector').value = profile.convDeleteSelector || '';
+  $('conv-confirm-selector').value = profile.convConfirmSelector || '';
 }
 
 /**
@@ -62,7 +66,10 @@ function collectProfile() {
     inputSelector: $('input-selector').value.trim(),
     sendSelector: $('send-selector').value.trim(),
     responseSelector: $('response-selector').value.trim(),
-    responseUrlPattern: $('url-pattern').value.trim()
+    responseUrlPattern: $('url-pattern').value.trim(),
+    convMoreSelector: $('conv-more-selector').value.trim(),
+    convDeleteSelector: $('conv-delete-selector').value.trim(),
+    convConfirmSelector: $('conv-confirm-selector').value.trim()
   };
 }
 

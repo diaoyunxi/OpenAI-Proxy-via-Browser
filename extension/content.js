@@ -22,7 +22,25 @@
     stablePollsAfterNet: 6, // 已收到流结束信号后，需连续 6 次轮询(约2.4s)文本无变化才算完成
     stablePollsDomOnly: 25, // 无网络信号时，需连续 25 次轮询(约10s)文本无变化才算完成
     startGraceMs: 3000,     // 任务开始后的最短观察时间，防止过早收尾
-    elementTimeoutMs: 15000 // 等待输入框/发送按钮出现的上限
+    elementTimeoutMs: 15000, // 等待输入框/发送按钮出现的上限
+    resetStepTimeoutMs: 5000, // 会话重置：等待每一步目标元素出现的上限
+    resetStepDelayMs: 400,    // 会话重置：每步点击后的等待时间（等下拉菜单/弹窗渲染）
+    resetFinalDelayMs: 800    // 会话重置：最后一步点击后的等待时间（等页面回到新对话页）
+  };
+
+  /**
+   * 会话重置（删除当前对话）各步骤的内置默认选择器。
+   * 默认值为 DeepSeek 网页版的「会话项菜单 → 删除 → 确认删除」三步路径；
+   * 站点配置（profile）中存在同名配置时优先使用配置值，配置留空才回落到此处。
+   * 删除完成后页面会自动回到新对话页，下一个请求因此在干净会话中发起。
+   */
+  var DEFAULT_RESET_SELECTORS = {
+    convMoreSelector:
+      '#root > div > div.c3ecdb44 > div.dc04ec1d > div > div._3586175.ds-scroll-area.ds-scroll-area--show-on-focus-within.ds-scroll-area--enabled > div._6d215eb.ds-scroll-area.ds-scroll-area--show-on-focus-within.ds-scroll-area--enabled > div > div:nth-child(1) > a._546d736.b64fb9ae > div._254829d > div > div.ds-button__background',
+    convDeleteSelector:
+      'body > div:nth-child(5) > div > div > div.ds-dropdown-menu-option.ds-dropdown-menu-option--error.ds-dropdown-menu-option--pending',
+    convConfirmSelector:
+      'body > div.ds-theme.ds-modal-wrapper > div > div.ds-modal-focus-lock > div > div.ds-modal-content__footer > div > div.ds-button.ds-button--error.ds-button--filled.ds-button--capsule.ds-button--m.ds-button--icon-relative-m.ds-button--min-width._0efab74 > span'
   };
 
   /** 宽松基线探测所需的最小当前文本长度：低于此值匹配结果不可信 */
@@ -44,6 +62,9 @@
   var netTextLength = 0;
   /** 「探测无果」诊断日志的节流时间戳 */
   var pickNullDiagAt = 0;
+  /** 会话重置流程的进行中的 Promise；为 null 表示当前无清理动作。
+   *  下一次任务开始前需等待其结束，避免「删除旧会话」与「发送新请求」在页面上互相干扰。 */
+  var resetPromise = null;
 
   // ------------------------------------------------------------------ 基础工具
 
@@ -115,6 +136,46 @@
         }
         if (Date.now() >= deadline) {
           resolve(null);
+          return;
+        }
+        setTimeout(attempt, 200);
+      }
+      attempt();
+    });
+  }
+
+  /**
+   * 等待某个选择器对应的元素出现且可见（用于下拉菜单、模态框等动态弹出的元素）。
+   *
+   * 与 waitForElement 的区别：额外校验可见性，避免在元素已挂载但尚未渲染
+   * （透明、零尺寸、display:none）时就点击，导致「点了没反应」。
+   * 超时兜底：若元素已存在但可见性判定始终不通过，仍返回该元素交由点击环节处理，
+   * 防止某些站点用 opacity 动画遮挡导致永远等不到。
+   *
+   * @param {string} selector CSS 选择器
+   * @param {number} timeout 最长等待时间（毫秒）
+   * @returns {Promise<Element|null>} 可用的元素，超时且元素不存在时返回 null
+   */
+  function waitForVisibleElement(selector, timeout) {
+    if (!selector) {
+      return Promise.resolve(null);
+    }
+    var deadline = Date.now() + timeout;
+    return new Promise(function (resolve) {
+      function attempt() {
+        var el = null;
+        try {
+          el = document.querySelector(selector);
+        } catch (err) {
+          resolve(null); // 选择器非法
+          return;
+        }
+        if (el && isVisible(el)) {
+          resolve(el);
+          return;
+        }
+        if (Date.now() >= deadline) {
+          resolve(el);
           return;
         }
         setTimeout(attempt, 200);
@@ -488,9 +549,14 @@
       el.click();
       return true;
     } catch (err) {
-      var event = new MouseEvent('click', { bubbles: true, cancelable: true, composed: true, view: window });
-      el.dispatchEvent(event);
-      return true;
+      // 原生 click 不可用时退化为合成鼠标事件；连事件构造都失败才判定点击失败
+      try {
+        var event = new MouseEvent('click', { bubbles: true, cancelable: true, composed: true, view: window });
+        el.dispatchEvent(event);
+        return true;
+      } catch (inner) {
+        return false;
+      }
     }
   }
 
@@ -1135,6 +1201,82 @@
   // ------------------------------------------------------------------ 任务执行
 
   /**
+   * 删除当前会话并回到新对话页。
+   *
+   * 设计目的：本扩展把每条请求都当作「一次性会话」处理——发送 → 提取 → 删除。
+   * 这样下一个请求始终在全新会话中发起，可避免两类问题：
+   *   1) 调用方（CLI）维护的上下文与网页侧残留的多轮上下文冲突；
+   *   2) 页面上残留的旧回复干扰 DOM 差异探测，导致内容提取错位。
+   *
+   * 执行路径共三步（站点可在弹窗中自行配置选择器，留空则使用内置默认值）：
+   *   1. 点击会话项菜单按钮（打开下拉菜单）；
+   *   2. 点击菜单中的「删除」项（弹出确认框）；
+   *   3. 点击确认框中的删除按钮（删除后页面自动回到新对话页）。
+   *
+   * 任一步失败只记录告警并返回 false，绝不影响本次已提取到的回复内容。
+   *
+   * @param {Object} profile 站点配置
+   * @returns {Promise<boolean>} 三步全部完成返回 true
+   */
+  async function resetConversation(profile) {
+    var config = profile || {};
+    var steps = [
+      {
+        name: '会话项菜单按钮',
+        selector: config.convMoreSelector || DEFAULT_RESET_SELECTORS.convMoreSelector
+      },
+      {
+        name: '删除菜单项',
+        selector: config.convDeleteSelector || DEFAULT_RESET_SELECTORS.convDeleteSelector
+      },
+      {
+        name: '确认删除按钮',
+        selector: config.convConfirmSelector || DEFAULT_RESET_SELECTORS.convConfirmSelector
+      }
+    ];
+
+    for (var i = 0; i < steps.length; i += 1) {
+      var step = steps[i];
+      if (!step.selector) {
+        log('会话重置中断：未配置「' + step.name + '」选择器', 'warn');
+        return false;
+      }
+      var el = await waitForVisibleElement(step.selector, CFG.resetStepTimeoutMs);
+      if (!el) {
+        log('会话重置中断：等待「' + step.name + '」超时，选择器：' + step.selector, 'warn');
+        return false;
+      }
+      if (!clickElement(el)) {
+        log('会话重置中断：点击「' + step.name + '」失败', 'warn');
+        return false;
+      }
+      // 最后一步多等一会儿，给页面完成删除并跳转回新对话页留出时间
+      await sleep(i === steps.length - 1 ? CFG.resetFinalDelayMs : CFG.resetStepDelayMs);
+    }
+    log('会话重置完成：已删除当前对话，页面已回到新对话页');
+    return true;
+  }
+
+  /**
+   * 异步触发会话重置，并把 Promise 记录在 resetPromise 上，
+   * 供下一次任务开始前排队等待（防止清理动作与新请求在页面上互相干扰）。
+   * 清理过程中抛出的任何异常都被吞掉，只留告警日志。
+   *
+   * @param {Object} profile 站点配置
+   */
+  function scheduleConversationReset(profile) {
+    resetPromise = resetConversation(profile)
+      .catch(function (err) {
+        log('会话重置异常：' + ((err && err.message) || err), 'warn');
+        return false;
+      })
+      .then(function (ok) {
+        resetPromise = null;
+        return ok;
+      });
+  }
+
+  /**
    * 结束当前任务并上报最终结果。
    * @param {string} finishReason 结束原因
    */
@@ -1195,6 +1337,12 @@
     }
 
     report(payload);
+
+    // 结果已回传后，再后台清理本次会话：
+    //   - 放在上报之后，不增加接口响应延迟；
+    //   - 清理失败只告警，不影响本次结果（见 resetConversation 注释）。
+    // 清理完成后页面自动回到新对话页，下一个请求即在干净会话中发起。
+    scheduleConversationReset(current.profile);
   }
 
   /**
@@ -1408,6 +1556,12 @@
     if (job) {
       report({ action: 'error', requestId: requestId, code: 'busy', message: '当前页面已有任务在执行' });
       return;
+    }
+    // 上一轮的会话清理（删除旧对话）可能仍在进行，必须等它结束再操作页面，
+    // 否则会出现「刚点完删除就被新请求填入文本 / 新回复渲染到即将被删的会话里」。
+    if (resetPromise) {
+      log('上一轮会话重置尚未结束，等待其完成后再发送', 'debug');
+      await resetPromise;
     }
     var input = null;
     if (profile.inputSelector) {
