@@ -204,10 +204,140 @@
   }
 
   /**
-   * 读取元素内文本。
-   * @param {Element} el 目标元素
-   * @returns {string} 归一化后的文本
+   * 思考块折叠标题的匹配模式（片段级）。
+   *
+   * 各站点文案不同（DeepSeek 的 "Thought for N seconds"、中文站的
+   * "已深度思考（用时 N 秒）"、Gemini 的 "Reasoned for N seconds" 等），统一在此登记。
+   *
+   * 匹配原则：
+   *   1. 一律「到时间单位为止」精确定界，**绝不使用** `[^\n]*` 吃到行尾。
+   *      标题常与正文被 textContent 拼在同一行，旧实现用 `[^\n]*` 会把整行正文一起
+   *      删掉，进而触发「主文本为空 → 回退容器全文」的兜底，最终思考内容被输出两遍；
+   *   2. 时间量必须显式出现（`\d+` 或 `a few` 等），不能只写 `s\b` 这类松散单位——
+   *      否则正文中出现 "thought for granted that it works" 时会被一路删到 works 的 s。
    */
+  var THINK_TITLE_PATTERNS = [
+    /Thought\s+(?:for|about)\s+(?:\d+\s*(?:seconds?|secs?|s\b|ms\b|minutes?|mins?|m\b)|a\s+(?:few|moment|second|minute)\b)/gi,
+    /Reasoned\s+(?:for|about)\s+(?:\d+\s*(?:seconds?|secs?|s\b|ms\b|minutes?|mins?|m\b)|a\s+(?:few|moment|second|minute)\b)/gi,
+    /Thinking\s+(?:for|about)\s+\d+\s*(?:seconds?|secs?|s\b|minutes?|mins?)/gi,
+    /已深度思考[（(][^）)]{0,30}[）)]/g,
+    /已深度思考[^。\n]{0,20}?\d+\s*(?:秒|分钟|s\b)/g,
+    /思考用时[^。\n]{0,10}?\d+\s*(?:秒|分钟)/g
+  ];
+
+  /**
+   * 归一化时需要忽略的字符：全部空白 + 各类零宽/不可见字符。
+   * 不加 `g` 标志，仅用于单字符 test，避免 lastIndex 副作用。
+   */
+  var INVISIBLE_CHAR_RE = /[\s\u00ad\u200b\u200c\u200d\u200e\u200f\u2060\ufeff]/;
+
+  /**
+   * 剔除文本中的「思考块折叠标题」（如 "Thought for 2 seconds"）。
+   * @param {string} text 原始文本
+   * @returns {string} 去除标题后的文本
+   */
+  function stripThinkTitles(text) {
+    if (!text) {
+      return '';
+    }
+    var out = String(text);
+    for (var i = 0; i < THINK_TITLE_PATTERNS.length; i += 1) {
+      out = out.replace(THINK_TITLE_PATTERNS[i], '');
+    }
+    return out;
+  }
+
+  /**
+   * 构造「归一化文本 → 原始文本下标」的映射。
+   *
+   * 归一化会剔除全部空白与不可见字符，用于跨文本源（`textContent` 与
+   * `cloneNode().textContent`）的可靠子串定位。严格字面量匹配会被零宽空格、
+   * 不间断空格、窄空格等差异彻底打垮，这正是「思考正文没被剔除、最终输出里
+   * 思考内容出现两遍」的根因。
+   *
+   * @param {string} text 原始文本
+   * @returns {{squashed: string, map: number[]}} 归一化串，及其每个字符在原串中的下标
+   */
+  function buildSquashMap(text) {
+    var src = String(text || '');
+    var chars = [];
+    var map = [];
+    for (var i = 0; i < src.length; i += 1) {
+      var c = src.charAt(i);
+      if (INVISIBLE_CHAR_RE.test(c)) {
+        continue;
+      }
+      chars.push(c);
+      map.push(i);
+    }
+    return { squashed: chars.join(''), map: map };
+  }
+
+  /**
+   * 归一化文本：剔除全部空白与不可见字符。
+   * @param {string} text 原始文本
+   * @returns {string} 归一化串
+   */
+  function squashInvisible(text) {
+    return buildSquashMap(text).squashed;
+  }
+
+  /**
+   * 在 text 中删除所有 targets（归一化等价匹配，容忍空白与不可见字符差异）。
+   *
+   * 两个关键设计（均为「思考内容重复输出」的修复点）：
+   *   1. 归一化后定位、再映射回原串切片，而非 `split(字面量).join('')`；
+   *   2. targets 按长度降序处理：避免短片段先被删除、把包含它的长片段切碎，
+   *      导致长片段再也匹配不上而残留（旧实现按文档顺序删除，存在该缺陷）。
+   *
+   * @param {string} text 原始文本
+   * @param {string[]} targets 待删除的文本片段
+   * @returns {string} 删除后的文本
+   */
+  function removeNormalized(text, targets) {
+    if (!text || !targets || targets.length === 0) {
+      return text || '';
+    }
+    var src = buildSquashMap(text);
+    var sorted = targets.slice().sort(function (a, b) {
+      return b.length - a.length;
+    });
+    var ranges = [];
+    for (var t = 0; t < sorted.length; t += 1) {
+      var needle = squashInvisible(sorted[t]);
+      if (!needle) {
+        continue;
+      }
+      var from = 0;
+      var idx = src.squashed.indexOf(needle, from);
+      while (idx !== -1) {
+        // 映射回原串：起于 needle 首字符的原下标，止于末字符的原下标 + 1
+        ranges.push([src.map[idx], src.map[idx + needle.length - 1] + 1]);
+        from = idx + needle.length;
+        idx = src.squashed.indexOf(needle, from);
+      }
+    }
+    if (ranges.length === 0) {
+      return text;
+    }
+    ranges.sort(function (a, b) {
+      return a[0] - b[0];
+    });
+    var out = '';
+    var cursor = 0;
+    for (var r = 0; r < ranges.length; r += 1) {
+      var start = ranges[r][0];
+      var end = ranges[r][1];
+      if (end <= cursor) {
+        continue; // 与已删除区间重叠，跳过
+      }
+      out += text.slice(cursor, start);
+      cursor = end;
+    }
+    out += text.slice(cursor);
+    return out;
+  }
+
   /**
    * 判断元素是否为模型的「思考块」（应被忽略，只保留最终回复）。
    *
@@ -258,26 +388,32 @@
   }
 
   /**
-   * 读取回复容器的完整文本，把模型「思考过程」用 ``<think>...</think>`` 包裹，
-   * 最终答案放在标签之外。
+   * 读取回复容器的完整文本。
+   *
+   * 输出形态由 ``keepThink`` 决定：
+   *   - ``true`` ：模型「思考过程」用 ``<think>...</think>`` 包裹在前，最终答案在标签之外；
+   *   - ``false``：只返回最终答案，思考过程被丢弃。
    *
    * 设计要点：
    *   - 思考块（``<details>`` / ``<think>`` / 含 think 关键词的元素）通常可折叠，
    *     ``innerText`` 对折叠内容返回空，因此读思考块用 ``textContent``（不关心渲染，
    *     能拿到折叠态下的完整思考正文）；
-   *   - 最终答案区正常可见，用 ``innerText`` 读取即可；
-   *   - 按文档顺序拼接：思考块在前、答案在后。
+   *   - 主文本 = 容器全文（textContent）减去「全部思考块正文」，减法走
+   *     ``removeNormalized()`` 的归一化匹配，而不是字面量 ``split``；
+   *   - 主文本为空时回退「已去标题的思考正文」而非容器全文——回退全文会把
+   *     "Thought for N seconds" 与思考原文一起带回来，造成思考内容重复输出。
    *
    * @param {Element} el 回复容器
-   * @returns {string} 含 ``<think>`` 包裹的完整回复文本
+   * @param {boolean} keepThink 是否保留思考过程（``<think>`` 包裹）
+   * @returns {string} 回复文本
    */
-  function readReplyText(el) {
+  function readReplyText(el, keepThink) {
     if (!el) {
       return '';
     }
     // 1) 收集顶层思考块（跳过嵌套在另一思考块内的）。
-    //    同时记录「含折叠标题的原始文本」(raw) 与「去除 <summary> 后的干净正文」(clean)：
-    //    后续用 raw 从容器全文里精确剔除，答案区只要不在思考块 DOM 内就一定保留。
+    //    记录「去除 <summary> 与折叠标题后的干净正文」(clean)：
+    //    后续用它从容器全文里剔除，答案区只要不在思考块 DOM 内就一定保留。
     var cleanList = [];      // 顶层思考块（用于 <think> 包裹输出，避免同一块重复计入）
     var allThinkTexts = [];  // 全部思考块文本（含嵌套/答案区复述），用于从最终答案中剔除
     var all = el.querySelectorAll('*');
@@ -308,8 +444,13 @@
         .replace(/\r\n/g, '\n')
         .replace(/\u00a0/g, ' ')
         .trim();
-      // 兜底剔除折叠标题行（"Thought for N seconds" 等，可能不在 <summary> 标签里）
-      clean = clean.replace(/Thought for[^\n]*\n?/gi, '').trim();
+      // 兜底剔除折叠标题（"Thought for N seconds" 等，可能不在 <summary> 标签里）。
+      // 用 stripThinkTitles 而非 /Thought for[^\n]*/ ：后者会吃光到行尾，标题与正文
+      // 同行时会把整段思考正文删掉，导致该块被丢弃、后续无从剔除。
+      clean = stripThinkTitles(clean)
+        .replace(/[ \t]+\n/g, '\n')
+        .replace(/\n{3,}/g, '\n\n')
+        .trim();
       if (!clean) {
         continue;
       }
@@ -329,24 +470,25 @@
       .replace(/\r\n/g, '\n')
       .replace(/\u00a0/g, ' ')
       .trim();
-    var main = full;
-    for (var r = 0; r < allThinkTexts.length; r += 1) {
-      main = main.split(allThinkTexts[r]).join('');
-    }
-    main = main
-      .replace(/Thought for[^\n]*\n?/gi, '')
+    var main = removeNormalized(full, allThinkTexts);
+    main = stripThinkTitles(main)
       .replace(/[ \t]+\n/g, '\n')
       .replace(/\n{3,}/g, '\n\n')
       .trim();
+    if (!main && cleanList.length > 0) {
+      // 兜底：减去思考正文后主文本为空，说明答案可能也被包在思考块内。
+      // 回退「已去标题的思考正文」而非容器全文，保证最终答案不丢失，
+      // 同时不会把折叠标题与思考原文重复带回输出。
+      main = cleanList.join('\n\n');
+    }
     if (!main) {
-      // 兜底：减去思考正文后主文本为空，说明答案可能也被包在思考块内，
-      // 回退容器全文，保证最终答案不丢失。
+      // 最终兜底：既无思考块、剔除后也无内容，只能用容器全文
       main = full;
     }
 
-    // 3) 按文档顺序拼接：思考在前，答案在后
+    // 3) 按文档顺序拼接：思考在前，答案在后（仅在保留思考时输出思考块）
     var out = '';
-    if (cleanList.length > 0) {
+    if (keepThink && cleanList.length > 0) {
       out += '<think>\n' + cleanList.join('\n\n') + '\n</think>';
     }
     if (main) {
@@ -1174,12 +1316,15 @@
    * JSON/代码时服务端收到空串）。此处只清理与页面渲染相关的标记：
    *   - <system>/<user> 标签包裹的内容（部分站点用来渲染消息角色）；
    *   - 已知 UI 噪音片段（免责声明、模式徽标、操作按钮行）；
+   *   - ``keepThink`` 为假时，额外剥离以纯文本形式出现的 ``<think>...</think>``
+   *     （站点未把思考渲染成 DOM 折叠块时，思考正文会以字面标签混在文本里）；
    *   - 多余空白归一化。
    *
    * @param {string} text 原始文本
+   * @param {boolean} [keepThink] 是否保留思考过程；不传或为假时剥离思考标签
    * @returns {string} 清理后的文本
    */
-  function cleanReplyText(text) {
+  function cleanReplyText(text, keepThink) {
     if (!text) {
       return '';
     }
@@ -1188,6 +1333,22 @@
     out = out.replace(/<system>\n?[\s\S]*?<\/system>/gi, '');
     // 移除 user 标签包裹的内容
     out = out.replace(/<user>\n?[\s\S]*?<\/user>/gi, '');
+    if (!keepThink) {
+      // 剥离字面思考标签。两个约束：
+      //   1. 只剥离「文本开头处连续的 think 块」——思考过程恒在最前，而正文里
+      //      讲解 <think> 用法的片段通常不在开头，据此区分二者，避免误删正文；
+      //   2. 仅在剥离后仍有实质内容时才生效，否则走下面的保底，不丢内容。
+      var noThink = out.replace(/^\s*(?:<think>[\s\S]*?<\/think>\s*)+/i, '');
+      if (noThink.trim()) {
+        out = noThink;
+      } else {
+        // 整段都是思考内容（答案缺失）：至少把标签去掉再返回，
+        // 避免「丢弃思考」模式下仍把 <think> 标签透传给客户端。
+        out = out.replace(/<\/?think>/gi, '');
+      }
+      // 再清一遍折叠标题（如站点把标题渲染在答案区而非思考块内）
+      out = stripThinkTitles(out);
+    }
     // 移除已知 UI 噪音片段
     for (var i = 0; i < UI_NOISE_PATTERNS.length; i += 1) {
       out = out.replace(UI_NOISE_PATTERNS[i], '');
@@ -1296,8 +1457,8 @@
     if (current.hasContent && current.snapshot) {
       current.lastText = stripStaleBeforeFinish(current.lastText, current.snapshot);
     }
-    // 清理回复文本，移除系统标记和噪音
-    var text = cleanReplyText(current.lastText);
+    // 清理回复文本，移除系统标记和噪音（是否保留思考过程按站点配置）
+    var text = cleanReplyText(current.lastText, current.profile.keepThinking === true);
     // 兜底防线：锁定内容非空但清洗后为空，说明全是 UI 噪音碎片，
     // 不能把空串当成功回复返回（表现为「AI 未回复返回空」），改为报错。
     if (!text && current.lastText && current.lastText.trim()) {
@@ -1372,6 +1533,9 @@
     }
     var now = Date.now();
     var elapsed = now - job.startedAt;
+    // 站点级开关：为 true 时把思考过程以 <think> 包裹一并回传，否则只取最终答案。
+    // 未配置的站点读到 undefined（falsy），即默认丢弃思考过程。
+    var keepThink = job.profile.keepThinking === true;
 
     var element = null;
     if (job.profile.responseSelector) {
@@ -1418,7 +1582,7 @@
       }
     }
 
-    var text = readReplyText(element);
+    var text = readReplyText(element, keepThink);
     // 容器切换后若本轮已积累过内容，用「已积累的新回复」在新文本里定位：
     // 新容器文本 = [旧内容][已积累的新回复][新增]，已积累部分必然存在其中，
     // 用它定位比拿快照基线去猜更可靠，且不会误伤本轮已确认的内容。
@@ -1455,7 +1619,7 @@
     //      表现为「AI 未回复 crx 就返回空」。
     // 处理：清空锁定容器强制重探、不计稳定、不计 hasContent；
     // 且不 return——保证下方超时判定仍可触发，AI 始终不回复时按 no_response 报错。
-    if (text && (isPromptEcho(text, job.prompt) || !cleanReplyText(text))) {
+    if (text && (isPromptEcho(text, job.prompt) || !cleanReplyText(text, keepThink))) {
       // 节流日志：同一碎片文本只记一次，避免每轮轮询刷屏
       if (job.noiseLoggedText !== text) {
         job.noiseLoggedText = text;
@@ -1465,7 +1629,11 @@
       // 已积累内容后再清空，会让容器在多个候选之间反复横跳，每轮读到的文本
       // 都被当成噪音丢弃，hasContent 永远为假，最终只能超时报 no_response
       // ——正是「AI 一直在输出，扩展却不向 server 返回内容」的成因之一。
-      if (!job.hasContent && job.element) {
+      //
+      // 例外：容器内含思考块时说明模型正在思考、答案尚未渲染（丢弃思考模式下
+      // 此时 text 为空）。思考块本身是稳定的，重探只会让容器反复横跳，
+      // 应保持当前容器继续等待答案。
+      if (!job.hasContent && job.element && !containsThinkBlock(job.element)) {
         job.element = null;
         job.baselineEl = null;
         job.baselineText = null;

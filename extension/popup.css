@@ -108,6 +108,19 @@ body {
   font-size: 12px;
 }
 
+/* 复选框行：与 .inline 同为横向排布，但 .inline 会拉伸内部文本框，不适合 checkbox */
+.field-check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+
+.field-check > span {
+  color: var(--color-muted);
+  font-size: 12px;
+}
+
 .required {
   color: var(--color-danger);
   font-style: normal;

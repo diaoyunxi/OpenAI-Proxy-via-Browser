@@ -55,6 +55,8 @@ function renderProfile(profile) {
   $('conv-more-selector').value = profile.convMoreSelector || '';
   $('conv-delete-selector').value = profile.convDeleteSelector || '';
   $('conv-confirm-selector').value = profile.convConfirmSelector || '';
+  // 布尔项不能用 `|| ''` 兜底：未配置时为 undefined，语义即「关闭（只返回最终答案）」
+  $('keep-thinking').checked = profile.keepThinking === true;
 }
 
 /**
@@ -69,7 +71,8 @@ function collectProfile() {
     responseUrlPattern: $('url-pattern').value.trim(),
     convMoreSelector: $('conv-more-selector').value.trim(),
     convDeleteSelector: $('conv-delete-selector').value.trim(),
-    convConfirmSelector: $('conv-confirm-selector').value.trim()
+    convConfirmSelector: $('conv-confirm-selector').value.trim(),
+    keepThinking: $('keep-thinking').checked
   };
 }
 
