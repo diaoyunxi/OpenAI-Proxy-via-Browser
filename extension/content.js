@@ -172,6 +172,57 @@
   ];
 
   /**
+   * 「思考进行中」的占位文案（**不含时间量**，与 THINK_TITLE_PATTERNS 互补）。
+   *
+   * 背景：模型思考期间，站点会先在回复区渲染一个临时标题（DeepSeek 的 "Thinking"、
+   * 中文站的 "思考中" / "深度思考中"），此时**最终答案尚未产出**。这类文案不带时间量，
+   * 上面的 THINK_TITLE_PATTERNS 一条都匹配不上，必须单独登记。
+   *
+   * 若不识别它，就会出现「模型还在思考，扩展就把占位当作回复回传」的问题；
+   * 又因思考块的标题在 DOM 中常有重复节点，textContent 拼接后表现为返回
+   * "ThinkingThinking"。
+   *
+   * 说明：这里只登记「明确指向思考中」的表述，刻意不含单独一个「思考」二字，
+   * 以降低误伤正常正文的概率。
+   */
+  var THINK_PLACEHOLDER_WORD =
+    '(?:thinking|thought|reasoning|思考中|深度思考中|正在思考|正在深度思考)';
+  /** 占位词整体匹配（大小写不敏感；String.replace 会重置 lastIndex，可安全复用） */
+  var THINK_PLACEHOLDER_RE = new RegExp(THINK_PLACEHOLDER_WORD, 'gi');
+  /** 占位词之间的常见分隔符/省略号（"Thinking..."、"Thinking Thinking" 等） */
+  var THINK_PLACEHOLDER_SEP = '[\\s.。…·、,，:：\\-—|/]*';
+  /** 文本「开头连续出现」的占位标题；只锚定开头，正文中段的同名单词不受影响 */
+  var THINK_PLACEHOLDER_LEAD_RE = new RegExp(
+    '^[\\s.。…·、,，:：\\-—|/]*(?:' + THINK_PLACEHOLDER_WORD + THINK_PLACEHOLDER_SEP + ')+',
+    'i'
+  );
+
+  /**
+   * 判断文本是否「只是思考占位」——整段去掉占位词与分隔符后不剩任何字符。
+   *
+   * 命中示例："Thinking"、"ThinkingThinking"（DOM 中标题节点重复拼接）、
+   *           "Thinking..."、"思考中"、"深度思考中"、"Reasoning"。
+   * 未命中示例："Thinking is a mental process"、"我在思考这个问题"（含实质内容）。
+   *
+   * @param {string} text 待判定文本
+   * @returns {boolean} 仅为思考占位返回 true
+   */
+  function isThinkPlaceholder(text) {
+    if (!text) {
+      return false;
+    }
+    // 先去掉全部空白与零宽/不可见字符（比 squash 多覆盖零宽字符）
+    var squashed = String(text).replace(/[\s\u00ad\u200b\u200c\u200d\u200e\u200f\u2060\ufeff]+/g, '');
+    if (!squashed) {
+      return false;
+    }
+    var rest = squashed
+      .replace(THINK_PLACEHOLDER_RE, '')
+      .replace(/[.。…·、,，:：\-—|/]+/g, '');
+    return rest === '';
+  }
+
+  /**
    * 归一化时需要忽略的字符：全部空白 + 各类零宽/不可见字符。
    * 不加 `g` 标志，仅用于单字符 test，避免 lastIndex 副作用。
    */
@@ -190,6 +241,12 @@
     for (var i = 0; i < THINK_TITLE_PATTERNS.length; i += 1) {
       out = out.replace(THINK_TITLE_PATTERNS[i], '');
     }
+    // 再剥离「开头连续出现的思考占位标题」：思考进行中的 "Thinking"、DOM 标题节点
+    // 重复拼接产生的 "ThinkingThinking" 都属于这一类。
+    // 顺序关键：必须放在「带时间量的标题」之后——否则 "Thought for 2 seconds" 会先被
+    // 这里的 "Thought" 吃掉前缀，令 THINK_TITLE_PATTERNS 再也匹配不上，残留 "for 2 seconds"。
+    // 只锚定开头，正文中段的同名单词不受影响。
+    out = out.replace(THINK_PLACEHOLDER_LEAD_RE, '');
     return out;
   }
 
@@ -421,11 +478,12 @@
     //    （「只返回思考内容」）。
     var main = collectAnswerText(el);
     if (!main) {
-      // 兜底：结构法取不到答案文本时，回退容器全文（至少保留可见内容，绝不丢答案）
-      main = (el.textContent || '')
-        .replace(/\r\n/g, '\n')
-        .replace(/\u00a0/g, ' ')
-        .trim();
+      // 兜底：结构法取不到答案文本时，回退「容器全文减去思考块」（至少保留可见内容，
+      // 绝不丢答案）。此处必须按思考块整块剔除，而不是直接取 el.textContent：
+      // 思考标题（如 "Thinking"，DOM 中常有重复节点）与思考正文都在思考块内，
+      // 直接取全文会把它们带出来——表现为「模型还在思考，扩展就返回了
+      // "ThinkingThinking"」，思考完成后的标题也会混进最终答案。
+      main = readTextWithoutThinkBlocks(el);
     }
     main = stripThinkTitles(main);
     // 轻量剔除答案区里复述的思考正文：仅当剔除后仍非空才生效，
@@ -490,6 +548,35 @@
   }
 
   /**
+   * 读取容器文本，但先剔除其中的全部「思考块」子树。
+   *
+   * 用于 readReplyText 的兜底路径（结构法取不到答案时）。与 collectAnswerText
+   * 按文本节点祖先链过滤不同，这里直接「克隆容器 → 移除全部思考块 → 取 textContent」，
+   * 保证折叠标题（"Thinking" 等，通常位于思考块内部）与思考正文被整块摘掉，
+   * 不会残留到最终答案里。
+   *
+   * @param {Element} el 回复容器
+   * @returns {string} 去除思考块后的容器文本
+   */
+  function readTextWithoutThinkBlocks(el) {
+    if (!el) {
+      return '';
+    }
+    var clone = el.cloneNode(true);
+    var nodes = clone.querySelectorAll('*');
+    // 从后往前移除：先删父节点会让后续索引错位，逆序可保证不漏删
+    for (var i = nodes.length - 1; i >= 0; i -= 1) {
+      if (isThinkBlock(nodes[i]) && nodes[i].parentNode) {
+        nodes[i].parentNode.removeChild(nodes[i]);
+      }
+    }
+    return (clone.textContent || '')
+      .replace(/\r\n/g, '\n')
+      .replace(/\u00a0/g, ' ')
+      .trim();
+  }
+
+  /**
    * 判断候选容器是否含有「真实答案正文」（剔除思考块、再剥离折叠标题后仍非空）。
    *
    * 用途：挑选响应容器时区分两类「含思考块」的候选——
@@ -509,7 +596,9 @@
     }
     var ans = collectAnswerText(el);
     ans = stripThinkTitles(ans);
-    return ans.trim().length > 0;
+    // 思考进行中时答案区可能只有占位标题（如 "Thinking"），这不算「有答案」，
+    // 否则会选中只渲染了思考占位的「空壳」容器，把占位当成回复。
+    return ans.trim().length > 0 && !isThinkPlaceholder(ans);
   }
 
   function readText(el) {
@@ -1642,16 +1731,27 @@
       text = stripLooseBaseline(text, job);
     }
     // 无效内容拦截（必须在 prompt 剥离之前，用原始 text 判断）：
-    // AI 回复开始前页面上有两类「假信号」会被误当回复容器锁定：
+    // AI 回复开始前页面上有三类「假信号」会被误当回复容器锁定：
     //   1) 用户消息回声：容器文本 = prompt + 少量 UI 标签（如「你好Instant」），
     //      若先剥 prompt 再判回声，indexOf(prompt)===0 永远为假，校验形同虚设；
     //   2) 纯 UI 噪音：回复区先渲染模式徽标（DeepThinkSearch 等）/免责声明，
     //      正文未到，cleanReplyText 清洗后为空。旧逻辑把这类静止碎片记为
     //      hasContent=true，稳定后提前 finish 且清洗后返回空串，
-    //      表现为「AI 未回复 crx 就返回空」。
+    //      表现为「AI 未回复 crx 就返回空」；
+    //   3) 思考占位：模型正在深度思考，回复区只有 "Thinking" / "思考中" 这类
+    //      临时标题（无时间量，THINK_TITLE_PATTERNS 匹配不到）。旧逻辑会把它记为
+    //      hasContent=true，配合 net_done 后只需 6 次稳定轮询（约 2.4s）就收尾，
+    //      表现为「模型还在思考，扩展就返回了 ThinkingThinking」。
     // 处理：清空锁定容器强制重探、不计稳定、不计 hasContent；
     // 且不 return——保证下方超时判定仍可触发，AI 始终不回复时按 no_response 报错。
-    if (text && (isPromptEcho(text, job.prompt) || !cleanReplyText(text, keepThink))) {
+    // 注意 isThinkPlaceholder 独立于 cleanReplyText：保留思考（keepThink=true）时
+    // cleanReplyText 不做标题剥离，必须由它兜住占位。
+    if (
+      text &&
+      (isPromptEcho(text, job.prompt) ||
+        isThinkPlaceholder(text) ||
+        !cleanReplyText(text, keepThink))
+    ) {
       // 节流日志：同一碎片文本只记一次，避免每轮轮询刷屏
       if (job.noiseLoggedText !== text) {
         job.noiseLoggedText = text;
