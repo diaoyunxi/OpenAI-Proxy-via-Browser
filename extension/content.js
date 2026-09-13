@@ -464,27 +464,34 @@
       }
     }
 
-    // 2) 主文本：容器全文（textContent，不受折叠/可见性影响）减去「全部思考块」文本。
-    //    减去所有思考块（含嵌套/答案区复述）而非仅顶层，可避免最终答案里残留思考内容。
-    var full = (el.textContent || '')
-      .replace(/\r\n/g, '\n')
-      .replace(/\u00a0/g, ' ')
-      .trim();
-    var main = removeNormalized(full, allThinkTexts);
-    main = stripThinkTitles(main)
+    // 2) 最终答案 = 容器中「祖先链不含任何思考块」的文本节点，按文档顺序拼接。
+    //    相比旧版「容器全文减去全部思考块文本」的文本减法，按 DOM 结构剥离有两个
+    //    关键优势，正是深度思考开关缺陷的根因所在：
+    //      a) 答案正文与思考正文部分重合（模型在答案里复述思考过程）时，不会把
+    //         答案当思考正文整段删掉；
+    //      b) 答案容器本身被 isThinkBlock 误判为思考块时，不会被牵连剔除。
+    //    旧版在这两种情况下会令 main 变空：keepThinking=false 时直接返回空串
+    //    （「不返回内容」），keepThinking=true 时又因兜底把思考当答案返回
+    //    （「只返回思考内容」）。
+    var main = collectAnswerText(el);
+    if (!main) {
+      // 兜底：结构法取不到答案文本时，回退容器全文（至少保留可见内容，绝不丢答案）
+      main = (el.textContent || '')
+        .replace(/\r\n/g, '\n')
+        .replace(/\u00a0/g, ' ')
+        .trim();
+    }
+    main = stripThinkTitles(main);
+    // 轻量剔除答案区里复述的思考正文：仅当剔除后仍非空才生效，
+    // 避免「思考正文恰好覆盖答案」时把答案整段删掉（保留上述结构法的健壮性）。
+    var deduped = removeNormalized(main, allThinkTexts);
+    if (deduped.trim()) {
+      main = deduped;
+    }
+    main = main
       .replace(/[ \t]+\n/g, '\n')
       .replace(/\n{3,}/g, '\n\n')
       .trim();
-    if (!main && cleanList.length > 0) {
-      // 兜底：减去思考正文后主文本为空，说明答案可能也被包在思考块内。
-      // 回退「已去标题的思考正文」而非容器全文，保证最终答案不丢失，
-      // 同时不会把折叠标题与思考原文重复带回输出。
-      main = cleanList.join('\n\n');
-    }
-    if (!main) {
-      // 最终兜底：既无思考块、剔除后也无内容，只能用容器全文
-      main = full;
-    }
 
     // 3) 按文档顺序拼接：思考在前，答案在后（仅在保留思考时输出思考块）
     var out = '';
@@ -495,6 +502,45 @@
       out += (out ? '\n\n' : '') + main;
     }
     return out.trim();
+  }
+
+  /**
+   * 收集容器中「不在任何思考块内部」的文本，按文档顺序拼接为最终答案。
+   *
+   * 通过遍历文本节点并沿祖先链判断是否属于思考块，天然把思考过程排除在答案之外，
+   * 避免「全文减思考」式文本减法误删答案（深度思考开关相关缺陷的根因）。
+   *
+   * @param {Element} el 回复容器
+   * @returns {string} 最终答案文本
+   */
+  function collectAnswerText(el) {
+    if (!el || !el.querySelectorAll) {
+      return '';
+    }
+    var parts = [];
+    var walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT, null);
+    var n = walker.nextNode();
+    while (n) {
+      if (n.nodeType === 3 && n.textContent && n.textContent.trim()) {
+        var inside = false;
+        var p = n.parentElement;
+        while (p && p !== el) {
+          if (isThinkBlock(p)) {
+            inside = true;
+            break;
+          }
+          p = p.parentElement;
+        }
+        if (!inside) {
+          parts.push(n.textContent);
+        }
+      }
+      n = walker.nextNode();
+    }
+    return parts.join('')
+      .replace(/\r\n/g, '\n')
+      .replace(/\u00a0/g, ' ')
+      .trim();
   }
 
   function readText(el) {
