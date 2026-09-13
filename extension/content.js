@@ -251,6 +251,23 @@
   }
 
   /**
+   * 判断文本是否「只包含思考内容」——整段就是一个或多个 `<think>` 块，块外没有任何内容。
+   *
+   * 用于结束判定：这类文本说明模型只产出了思考过程、最终答案还没渲染出来，
+   * 不能当成「已完成的回复」，否则关闭「保留模型思考过程」时会返回思考内容。
+   *
+   * @param {string} text 待判定文本
+   * @returns {boolean} 整段仅为思考内容返回 true
+   */
+  function isThinkOnlyText(text) {
+    var t = String(text || '').trim();
+    if (!t || t.indexOf('<think>') === -1) {
+      return false;
+    }
+    return t.replace(/^\s*(?:<think>[\s\S]*?<\/think>\s*)+/i, '') === '';
+  }
+
+  /**
    * 判断文本是否「疑似一段尚未输出完整的 JSON」。
    *
    * 模型流式输出工具调用时，会长时间处于「以 [ 或 { 开头、但括号还没闭合」的中间状态。
@@ -459,6 +476,33 @@
   }
 
   /**
+   * 判断元素是否位于某个「思考块」的内部（只向上查祖先链，不含自身）。
+   *
+   * 为什么必须单独判一次：思考块内部的元素（例如 DeepSeek 思考块里的
+   * `<p class="ds-markdown-paragraph">`）**自身**不含 think 关键词，而
+   * `containsThinkBlock()` 只向下查后代——两个判定都发现不了「它正待在思考块里」。
+   * 于是这类元素会被当成「最深的回复容器」选中并读出思考正文；在关闭
+   * 「保留模型思考过程」时，就表现为「只返回思考内容」，且时好时坏
+   *（取决于思考与答案的渲染时序）。
+   *
+   * @param {Element} el 待判定元素
+   * @returns {boolean} 位于思考块内部返回 true
+   */
+  function isInsideThinkBlock(el) {
+    if (!el) {
+      return false;
+    }
+    var p = el.parentElement;
+    while (p) {
+      if (isThinkBlock(p)) {
+        return true;
+      }
+      p = p.parentElement;
+    }
+    return false;
+  }
+
+  /**
    * 读取回复容器的完整文本。
    *
    * 输出形态由 ``keepThink`` 决定：
@@ -480,6 +524,12 @@
    */
   function readReplyText(el, keepThink) {
     if (!el) {
+      return '';
+    }
+    // 防御：容器自身位于思考块内部时，读到的只可能是思考过程，不存在「最终答案」。
+    // 正常不会走到这里（pickResponseElement 已排除这类元素），保留以防容器被复用后
+    // 指向了思考块内的节点——届时宁可返回空、让上层继续等待答案，也不能把思考当回复。
+    if (isInsideThinkBlock(el)) {
       return '';
     }
     // 1) 收集顶层思考块（跳过嵌套在另一思考块内的）。
@@ -565,9 +615,14 @@
       .replace(/\n{3,}/g, '\n\n')
       .trim();
 
-    // 3) 按文档顺序拼接：思考在前，答案在后（仅在保留思考时输出思考块）
+    // 3) 按文档顺序拼接：思考在前，答案在后。
+    //    - 保留思考（keepThink=true）：思考块恒定输出；
+    //    - 丢弃思考（keepThink=false）：正常只输出答案；但若此刻**答案区还是空的**、
+    //      而容器里确实有思考内容，则把思考内容用 <think> 包裹返回——下游会把它识别为
+    //      「只有思考、尚无答案」而继续等待；万一直到超时都没有答案，客户端也能凭标签
+    //      识别并灰显，而不是把思考正文误当成最终答案。
     var out = '';
-    if (keepThink && cleanList.length > 0) {
+    if (cleanList.length > 0 && (keepThink || !main)) {
       out += '<think>\n' + cleanList.join('\n\n') + '\n</think>';
     }
     if (main) {
@@ -983,6 +1038,14 @@
       }
       // 不选思考块本身（其变化通常最大，但含的是思考过程而非完整回复）
       if (isThinkBlock(el)) {
+        stats.think += 1;
+        continue;
+      }
+      // 也不选「位于思考块内部」的元素：思考块里的 markdown 段落（如
+      // <p class="ds-markdown-paragraph">）自身不含 think 关键词、后代里也没有思考块，
+      // 上面两个判定都发现不了它，会被当作最深的候选选中并读出思考正文——
+      // 关闭「保留模型思考过程」时就表现为「只返回思考内容」。
+      if (isInsideThinkBlock(el)) {
         stats.think += 1;
         continue;
       }
@@ -1524,9 +1587,10 @@
       if (noThink.trim()) {
         out = noThink;
       } else {
-        // 整段都是思考内容（答案缺失）：至少把标签去掉再返回，
-        // 避免「丢弃思考」模式下仍把 <think> 标签透传给客户端。
-        out = out.replace(/<\/?think>/gi, '');
+        // 整段都是思考内容（答案缺失）：**保留 <think> 包裹**返回，交由客户端识别并灰显。
+        // 旧实现会在这里把标签剥掉，结果思考正文看起来就是最终答案——正是
+        // 「关闭保留思考却只返回思考内容」的表现之一。
+        out = out.trim();
       }
       // 再清一遍折叠标题（如站点把标题渲染在答案区而非思考块内）
       out = stripThinkTitles(out);
@@ -1771,6 +1835,17 @@
       job.stablePolls = 0;
       text = '';
     }
+    // 若本轮文本「只有思考内容」（最终答案尚未产出），不作为答案：
+    // 记录为兜底文本、不计稳定、不置 hasContent，继续等待答案；
+    // 只有直到超时都拿不到答案时，才会用它兜底返回（见下方超时分支）。
+    if (text && isThinkOnlyText(text)) {
+      if (!job.thinkFallback) {
+        log('当前只读到模型思考内容、尚无最终答案，继续等待', 'debug');
+      }
+      job.thinkFallback = text;
+      job.stablePolls = 0;
+      text = '';
+    }
     // prompt 前缀剥离：若最终选中的是「累积型祖先容器」（文本=旧对话+prompt+新回复），
     // 基线剥掉旧对话后开头残留的是本次 prompt，需一并剥掉才是纯回复。
     if (text && job.prompt && text.indexOf(job.prompt) === 0) {
@@ -1863,6 +1938,13 @@
     }
     if (elapsed >= job.timeoutMs) {
       if (job.hasContent) {
+        finishJob('length');
+      } else if (job.thinkFallback) {
+        // 超时仍未产出答案，但页面确实只有思考内容：按「可以返回但标明」的约定兜底返回。
+        // <think> 标签会被客户端识别并灰显，不会被误当成正常答案。
+        log('超时仍未产出最终答案，兜底返回模型思考内容（已用 <think> 标明）', 'warn');
+        job.lastText = job.thinkFallback;
+        job.hasContent = true;
         finishJob('length');
       } else {
         failJob('no_response', '未在超时时间内检测到回答内容，请检查输入框/发送按钮选择器，或手动配置响应容器选择器');
@@ -1970,6 +2052,7 @@
       netDoneAt: 0,             // 收到流结束信号的时间戳，用于判断信号之后文本是否仍在增长
       netSignalDistrusted: false, // 是否已判定该结束信号不可信（仅用于日志去重）
       truncatedJsonLogged: false, // 「疑似未完成 JSON」日志是否已记录（仅用于去重）
+      thinkFallback: '',        // 只读到思考内容时的兜底文本（直到超时仍无答案时才使用）
       stablePolls: 0,
       element: null,
       signalReported: false,
