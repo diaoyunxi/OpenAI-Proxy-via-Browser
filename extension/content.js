@@ -24,6 +24,10 @@
     // 收到流结束信号后允许的「前端渲染滞后」宽限：信号之后在这段时间内文本还在增长，
     // 仍按渲染延迟处理（继续用短窗口）；超出之后还在增长，则判定该信号不代表答案流结束。
     netDoneRenderGraceMs: 1000,
+    // 页面文本「看起来就是一整段工具调用 JSON」时使用的稳定窗口：模型输出结构化数据后
+    // 往往还有后续内容（思考结束后的正文、下一个调用、补充说明），用更长的窗口避免过早
+    // 判定完成、把这段 JSON 直接送去执行。12 次 × 400ms ≈ 4.8s。
+    toolCallStablePolls: 12,
     startGraceMs: 3000,     // 任务开始后的最短观察时间，防止过早收尾
     elementTimeoutMs: 15000  // 等待输入框/发送按钮出现的上限
   };
@@ -244,6 +248,74 @@
     // 只锚定开头，正文中段的同名单词不受影响。
     out = out.replace(THINK_PLACEHOLDER_LEAD_RE, '');
     return out;
+  }
+
+  /**
+   * 判断文本是否「疑似一段尚未输出完整的 JSON」。
+   *
+   * 模型流式输出工具调用时，会长时间处于「以 [ 或 { 开头、但括号还没闭合」的中间状态。
+   * 这种文本绝不能被判定为「回复完成」——否则客户端会收到半截 JSON（表现为「工具调用的
+   * JSON 还没输出完就被返回」，甚至被当作完整调用直接执行）。
+   *
+   * 判定方式：文本以 [ / { 开头却无法被 JSON.parse 解析，即认为还没输出完。
+   * 正常正文极少以这两个符号开头（Markdown 代码块以反引号开头、中文回答以汉字开头），
+   * 误判代价也仅是「多等一会儿」，因此判定取向偏保守。
+   *
+   * @param {string} text 待判定文本
+   * @returns {boolean} 疑似未完成的 JSON 返回 true
+   */
+  function looksLikeTruncatedJson(text) {
+    var t = String(text || '').trim();
+    if (!t) {
+      return false;
+    }
+    var head = t.charAt(0);
+    if (head !== '[' && head !== '{') {
+      return false;
+    }
+    try {
+      JSON.parse(t);
+      return false; // 能解析成功，说明已经是完整 JSON
+    } catch (err) {
+      return true; // 以结构化符号开头却解析失败 → 疑似还没输出完
+    }
+  }
+
+  /**
+   * 判断文本是否为「完整的工具调用 JSON」（`{"tool": ...}` 或其数组形式）。
+   *
+   * 仅用于结束判定：命中时改用更长的稳定窗口，避免模型刚输出完这段 JSON、
+   * 还要继续输出正文（或下一个调用）时被过早收尾。
+   *
+   * 注意：这里只做「形状判断」，扩展本身**不再解析、也不再回传 tool_calls**——
+   * 工具调用的解析与执行统一交给客户端（客户端解析器自带括号闭合校验，
+   * 由它来兜「半截 JSON」比在扩展侧用宽松正则猜测更可靠）。
+   *
+   * @param {string} text 待判定文本
+   * @returns {boolean} 形如完整的工具调用 JSON 返回 true
+   */
+  function isToolCallJson(text) {
+    var t = String(text || '').trim();
+    if (!t) {
+      return false;
+    }
+    var head = t.charAt(0);
+    if (head !== '[' && head !== '{') {
+      return false;
+    }
+    var parsed;
+    try {
+      parsed = JSON.parse(t);
+    } catch (err) {
+      return false;
+    }
+    if (!parsed || typeof parsed !== 'object') {
+      return false;
+    }
+    if (Array.isArray(parsed)) {
+      return parsed.length > 0 && !!parsed[0] && typeof parsed[0] === 'object' && 'tool' in parsed[0];
+    }
+    return 'tool' in parsed;
   }
 
   /**
@@ -1728,6 +1800,16 @@
       job.stablePolls += 1;
     }
 
+    // 工具调用相关的硬防护：若当前文本疑似「还没输出完的 JSON」，一律清零稳定计数、
+    // 绝不判定完成——否则半截 JSON 会被当作结果回传给客户端（见 looksLikeTruncatedJson 注释）。
+    if (job.lastText && looksLikeTruncatedJson(job.lastText)) {
+      if (!job.truncatedJsonLogged) {
+        job.truncatedJsonLogged = true;
+        log('当前输出疑似未完成的 JSON，暂不判定完成，继续等待', 'debug');
+      }
+      job.stablePolls = 0;
+    }
+
     // 结束判定：基于「连续多次轮询文本无变化」，而非绝对静默时长。
     //   - 流式站点（已收到 net_done）：流真结束后只需较短连续稳定窗口，给 DOM 渲染留缓冲；
     //   - 无网络信号站点：需很长连续稳定窗口，容忍深度思考的自然长停顿，避免提前截断。
@@ -1745,6 +1827,12 @@
         job.netSignalDistrusted = true;
         log('网络结束信号之后文本仍在增长，判定该信号不代表答案流结束，恢复长稳定窗口', 'warn');
       }
+    }
+    // 文本「看起来就是一整段完整的工具调用 JSON」时改用更长的稳定窗口：模型往往还会接着
+    // 输出正文（思考结束后的答案、下一个调用、补充说明），过早收尾会把这段 JSON 直接送去
+    // 执行（表现为「AI 还没回复完就把工具调用执行了」）。
+    if (job.hasContent && job.lastText && isToolCallJson(job.lastText)) {
+      requiredPolls = Math.max(requiredPolls, CFG.toolCallStablePolls);
     }
     if (job.hasContent && job.stablePolls >= requiredPolls && elapsed >= CFG.startGraceMs) {
       // 旧内容校验：虚拟列表重建节点后，含旧回复全文的新节点不在快照中，
@@ -1881,6 +1969,7 @@
       netDone: false,
       netDoneAt: 0,             // 收到流结束信号的时间戳，用于判断信号之后文本是否仍在增长
       netSignalDistrusted: false, // 是否已判定该结束信号不可信（仅用于日志去重）
+      truncatedJsonLogged: false, // 「疑似未完成 JSON」日志是否已记录（仅用于去重）
       stablePolls: 0,
       element: null,
       signalReported: false,

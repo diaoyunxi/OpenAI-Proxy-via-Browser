@@ -804,24 +804,12 @@ function failCurrentTask(code, message) {
 }
 
 /**
- * 从文本中提取工具调用 JSON（格式: [{"tool": "name", "args": {...}}]）
- * @param {string} text 模型回复文本
- * @returns {Array|null} 工具调用数组或 null
- */
-function extractToolCalls(text) {
-  if (!text || typeof text !== 'string') return null;
-  // 匹配工具调用数组格式
-  var match = text.match(/^\s*(\[\s*\{\s*"tool"\s*:[\s\S]*?\}\s*\])\s*$/i);
-  if (!match) return null;
-  try {
-    return JSON.parse(match[1]);
-  } catch (e) {
-    return null;
-  }
-}
-
-/**
  * 结束当前任务（成功路径）。
+ *
+ * 工具调用**不再由扩展解析**：整段回答（自然语言或工具调用 JSON）原样透传给网关，
+ * 由客户端解析并执行。原因：客户端解析器会用括号配对判断 JSON 是否闭合，能可靠拒绝
+ * 「半截 JSON」；而扩展侧原先的宽松正则会把未输出完的片段当成完整调用直接送执行。
+ *
  * @param {string} text 完整回答文本
  * @param {string} finishReason 结束原因
  */
@@ -833,16 +821,9 @@ function finishCurrentTask(text, finishReason) {
   clearTaskTimers(task);
   state.currentTask = null;
   detachDebugger(task.tabId);
-  // 提取工具调用
-  var toolCalls = extractToolCalls(text);
   console.log('[oap] finishCurrentTask: text_length=' + (text ? text.length : 0) +
-              ' finish_reason=' + finishReason + ' toolCalls=' + JSON.stringify(toolCalls));
-  var payload = { type: 'done', text: text, finish_reason: finishReason || 'stop' };
-  if (toolCalls && toolCalls.length > 0) {
-    payload.tool_calls = toolCalls;
-    console.log('[oap] 提取到工具调用: ' + toolCalls.length + ' 个');
-  }
-  task.reporter(payload);
+              ' finish_reason=' + finishReason);
+  task.reporter({ type: 'done', text: text, finish_reason: finishReason || 'stop' });
   broadcastStatus();
 }
 
