@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "OpenAI Proxy via Browser",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "把本地 AI 网页（任意站点，自行配置选择器）包装成 OpenAI 兼容的本地 API 网关。",
   "minimum_chrome_version": "111",
   "icons": {

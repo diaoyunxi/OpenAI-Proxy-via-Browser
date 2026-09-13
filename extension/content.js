@@ -543,6 +543,29 @@
       .trim();
   }
 
+  /**
+   * 判断候选容器是否含有「真实答案正文」（剔除思考块、再剥离折叠标题后仍非空）。
+   *
+   * 用途：挑选响应容器时区分两类「含思考块」的候选——
+   *   1. 真正包住最终答案的容器（如 DeepSeek 的 .ds-message 根节点，同时含
+   *      ds-think-content 思考块与 ds-assistant-message-main-content 答案）；
+   *   2. 只包住思考块的「空壳」容器（如 DeepSeek 的 ._74c0879，答案在它的兄弟节点）。
+   * 第 2 类一旦被选中，readReplyText 在关闭保留思考时剥离标题后为空（不返回内容），
+   * 开启时又只返回思考内容。本函数返回 false 即可让 pickResponseElement 跳过它，
+   * 改选「既含思考块又含答案」的更外层容器，或退而求其次选中答案容器本身。
+   *
+   * @param {Element} el 候选元素
+   * @returns {boolean} 含实质答案正文返回 true
+   */
+  function candidateHasAnswer(el) {
+    if (!el) {
+      return false;
+    }
+    var ans = collectAnswerText(el);
+    ans = stripThinkTitles(ans);
+    return ans.trim().length > 0;
+  }
+
   function readText(el) {
     if (!el) {
       return '';
@@ -987,7 +1010,17 @@
         continue;
       }
       if (containsThinkBlock(candidate.el)) {
-        return candidate.el;
+        // 仅当该容器「同时含真实答案正文」才选中：DeepSeek 等站点把思考块包在一个
+        // wrapper（如 ._74c0879）里，而最终答案在它的兄弟节点
+        // （ds-assistant-message-main-content）。若直接返回这类「只包思考块」的空壳容器，
+        // readReplyText 在关闭保留思考时剥离标题后为空（不返回内容），
+        // 开启时又只返回思考内容（答案在容器之外读不到）。
+        // 故需跳过它们，继续寻找「既含思考块又含答案」的容器（如 .ds-message 根节点）；
+        // 若遍历完也没找到，则退而求其次由末尾的 best（答案容器本身）兜底。
+        if (candidateHasAnswer(candidate.el)) {
+          return candidate.el;
+        }
+        continue;
       }
       if (!best) {
         best = candidate;
