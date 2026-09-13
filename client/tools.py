@@ -7,20 +7,20 @@
 """
 from __future__ import annotations
 
-import json
 import os
 import subprocess
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Any, Callable, Dict, List
+from collections.abc import Callable
+from typing import Any
 
 # 危险命令关键词（仅做提示性拦截，并非绝对安全保证）
 _DANGEROUS = ("rm -rf", "rm -r ", "mkfs", "dd if=", ":(){", "> /dev/sd",
               "shutdown", "reboot", "chmod -R", "chown -R")
 
 
-def _tool(name: str, description: str, parameters: Dict[str, Any]):
+def _tool(name: str, description: str, parameters: dict[str, Any]):
     """工具装饰器：把元数据挂到函数上，便于统一注册与说明生成。"""
     def deco(func: Callable) -> Callable:
         func._tool_name = name
@@ -129,7 +129,7 @@ def http_request(url: str, method: str = "GET", body: str = None) -> str:
 
 
 # 内置工具注册表：工具名 -> 可执行函数
-BUILTIN_TOOLS: Dict[str, Callable] = {
+BUILTIN_TOOLS: dict[str, Callable] = {
     shell._tool_name: shell,
     read_file._tool_name: read_file,
     write_file._tool_name: write_file,
@@ -138,7 +138,7 @@ BUILTIN_TOOLS: Dict[str, Callable] = {
 }
 
 
-def get_tool_spec(tool_func: Callable) -> Dict[str, Any]:
+def get_tool_spec(tool_func: Callable) -> dict[str, Any]:
     """把被 @_tool 装饰的函数转为工具说明（用于注入系统提示词）。"""
     return {
         "name": tool_func._tool_name,
@@ -147,6 +147,6 @@ def get_tool_spec(tool_func: Callable) -> Dict[str, Any]:
     }
 
 
-def list_tool_specs() -> List[Dict[str, Any]]:
+def list_tool_specs() -> list[dict[str, Any]]:
     """返回所有内置工具说明列表。"""
     return [get_tool_spec(f) for f in BUILTIN_TOOLS.values()]

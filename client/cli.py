@@ -10,7 +10,6 @@ import argparse
 import os
 import re
 import sys
-from typing import List
 
 from .agent import Agent
 from .oap_client import OAPClient, OAPError
@@ -80,7 +79,7 @@ def _paint_think(text: str) -> str:
     )
 
 
-def main(argv: List[str] = None) -> int:
+def main(argv: list[str] = None) -> int:
     # 首次运行时补齐缺失的提示词文件（已存在的一律不动）
     created = ensure_prompt_files()
     if created:

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """OpenAI-Proxy-via-Browser 网关服务入口。
 
 启动方式：
@@ -11,12 +10,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import Any, AsyncIterator
-
-from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse
+from typing import Any
 
 from bridge import (
     BrowserBridge,
@@ -26,6 +22,9 @@ from bridge import (
     TaskTimeoutError,
 )
 from config import CONFIG
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse, StreamingResponse
 from openai_compat import (
     SSE_DONE,
     SSE_PING,

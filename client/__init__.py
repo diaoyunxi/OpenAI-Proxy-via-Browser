@@ -6,6 +6,6 @@ from .agent import Agent
 from .oap_client import OAPClient, OAPError
 from .tools import BUILTIN_TOOLS, list_tool_specs
 
-__all__ = ["OAPClient", "OAPError", "Agent", "BUILTIN_TOOLS", "list_tool_specs"]
+__all__ = ["BUILTIN_TOOLS", "Agent", "OAPClient", "OAPError", "list_tool_specs"]
 
 __version__ = "0.1.1"
