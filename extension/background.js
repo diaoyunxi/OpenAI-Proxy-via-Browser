@@ -20,6 +20,12 @@ var DEFAULT_GATEWAY_URL = 'ws://127.0.0.1:8080/ws';
 var HEARTBEAT_MS = 20000;
 /** 发起任务后等待首个网络信号的时间，超时则降级为 debugger 抓包 */
 var NETWORK_GRACE_MS = 10000;
+/** 下发 run 后等待 content script 回 accepted 的上限：超时说明指令没送达，需重试 */
+var ACCEPT_TIMEOUT_MS = 15000;
+/** 会话重置导航后，等待新文档 content script 就绪（hello 上报）的上限 */
+var NAV_SETTLE_TIMEOUT_MS = 20000;
+/** 任务硬超时相对网关超时的宽限：兜底清理悬挂任务，避免扩展被 browser_busy 卡死 */
+var TASK_HARD_TIMEOUT_GRACE_MS = 10000;
 /** 保活闹钟名称 */
 var KEEPALIVE_ALARM = 'oap-keepalive';
 /** debugger 使用的 CDP 协议版本 */
@@ -37,7 +43,11 @@ var state = {
   sessionId: null,
   clientId: '',
   currentTask: null,
-  debugSession: null
+  debugSession: null,
+  /** 下一次任务开始前需要「开启新对话」的标签页 id；null 表示无需重置 */
+  pendingNewChat: null,
+  /** 最近一次收到 content script hello 的时间与来源，用于判断新文档是否已就绪 */
+  lastHello: null
 };
 
 /** tabId -> Port 的映射：与 content script 的持久连接 */
@@ -566,25 +576,40 @@ function executeTask(options) {
       });
       return null;
     }
-    // 上一轮任务结束后页面会整页跳转到「新对话页」，先等标签页加载完成再注入，
-    // 避免 content script 落到正在卸载的旧文档上导致注入失败。
-    return waitForTabReady(tab.id)
+    // 顺序很关键：
+    //   1) 若上一轮留下了「需要开启新对话」标记，先完成导航并等新文档就绪；
+    //   2) 再等标签页加载完成，避免 content script 落到正在卸载的旧文档上。
+    // 导航必须在任务下发之前完成，否则会与紧接着到达的下一轮请求抢跑。
+    return resetConversationIfNeeded(tab.id)
+      .then(function () {
+        return waitForTabReady(tab.id);
+      })
       .then(function () {
         return ensureContentScript(tab.id);
       })
-      .then(function () {
-        return ensureInjected(tab.id);
-      })
-      .then(function () {
-        return getProfile(hostOf(tab.url || ''));
+      .then(function (ready) {
+        if (!ready) {
+          options.reporter({
+            type: 'error',
+            code: 'injection_failed',
+            message: '目标页面无法注入 content script（可能仍在加载或页面受限），请稍后重试'
+          });
+          return null;
+        }
+        return ensureInjected(tab.id).then(function () {
+          return getProfile(hostOf(tab.url || ''));
+        });
       })
       .then(function (profile) {
+        if (!profile) {
+          return; // 上一步已上报错误，短路结束
+        }
         if (!profile.inputSelector) {
           // 不直接报错：content script 会尝试自动识别输入框，失败时才上报 selector_missing
           console.info('[oap] 站点 ' + hostOf(tab.url || '') + ' 未配置输入框选择器，将尝试自动识别');
         }
 
-        state.currentTask = {
+        var task = {
           requestId: options.requestId,
           tabId: tab.id,
           startedAt: Date.now(),
@@ -594,18 +619,159 @@ function executeTask(options) {
             armDebugger(tab.id, profile.responseUrlPattern || '');
           }, NETWORK_GRACE_MS),
           networkSeen: false,
-          chunks: []
+          chunks: [],
+          accepted: false,
+          retried: false,
+          acceptedTimer: null,
+          taskTimer: null,
+          runMessage: null
         };
+        state.currentTask = task;
 
-        sendToContent(tab.id, {
-          action: 'run',
-          requestId: options.requestId,
-          prompt: options.prompt,
-          timeoutMs: options.timeoutMs,
-          profile: profile
-        });
+        // 任务硬超时兜底：即便 content script 因任何原因彻底失联（页面被关掉、刷新中途、
+        // 脚本异常），也能释放 currentTask，避免后续请求被 browser_busy 永久拒绝。
+        task.taskTimer = setTimeout(function () {
+          if (state.currentTask === task) {
+            failCurrentTask('browser_timeout', '浏览器侧任务超时未完成，已强制释放（避免后续请求被拒）');
+          }
+        }, (options.timeoutMs || 180000) + TASK_HARD_TIMEOUT_GRACE_MS);
+
+        dispatchRun(task, profile, options.prompt);
       });
   });
+}
+
+/**
+ * 若该标签页被标记「下一轮前需要开启新对话」，则导航回站点根路径并等新页面就绪。
+ *
+ * 为什么要由本侧主导：若让 content script 在回传结果后自行整页跳转，跳转会与客户端
+ * 紧接着发起的下一轮请求形成竞态——跳转尚未起步时 `tab.status` 仍是 complete，等待逻辑
+ * 会立即放行，任务被投递到正在卸载的旧文档后无声丢失（表现为「工具执行后不再继续发送」）。
+ * 改为「任务到来时才导航」，即可保证「导航 → 等就绪 → 下发任务」严格串行。
+ *
+ * 导航失败只记录告警、不阻断任务（尽力而为，退回旧会话继续）。
+ *
+ * @param {number} tabId 标签页 id
+ * @returns {Promise<void>} 无需重置、或重置流程结束后 resolve
+ */
+function resetConversationIfNeeded(tabId) {
+  if (state.pendingNewChat !== tabId) {
+    return Promise.resolve();
+  }
+  state.pendingNewChat = null;
+  return new Promise(function (resolve) {
+    chrome.tabs.get(tabId, function (tab) {
+      if (chrome.runtime.lastError || !tab || !tab.url) {
+        console.warn('[oap] 会话重置跳过：无法读取标签页信息');
+        resolve();
+        return;
+      }
+      var origin = '';
+      try {
+        origin = new URL(tab.url).origin;
+      } catch (err) {
+        origin = '';
+      }
+      if (!origin || origin === 'null') {
+        console.warn('[oap] 会话重置跳过：无法解析站点根路径');
+        resolve();
+        return;
+      }
+      var target = origin + '/';
+      var since = Date.now();
+      console.info('[oap] 会话重置：导航到新对话页 ' + target);
+      chrome.tabs.update(tabId, { url: target }, function () {
+        if (chrome.runtime.lastError) {
+          console.warn('[oap] 会话重置导航失败：' + chrome.runtime.lastError.message);
+          resolve();
+          return;
+        }
+        waitForFreshContentScript(tabId, since).then(function (ready) {
+          if (ready) {
+            console.info('[oap] 会话重置完成：新对话页已就绪');
+          } else {
+            console.warn('[oap] 会话重置等待超时：新页面 content script 未就绪，仍继续下发（可能失败）');
+          }
+          resolve();
+        });
+      });
+    });
+  });
+}
+
+/**
+ * 等待指定标签页出现「晚于 since 的 hello 上报」，即新文档的 content script 已就绪。
+ *
+ * 用 hello 而不是 tab.status 判断就绪：status 变为 complete 只说明主文档加载完成，
+ * 此刻 content script 未必已注入并建立连接；hello 才是新脚本真正可接收指令的明确信号。
+ *
+ * @param {number} tabId 标签页 id
+ * @param {number} since 起始时间戳（导航发起时刻）
+ * @returns {Promise<boolean>} 在超时前收到 hello 返回 true
+ */
+function waitForFreshContentScript(tabId, since) {
+  return new Promise(function (resolve) {
+    var deadline = Date.now() + NAV_SETTLE_TIMEOUT_MS;
+    function check() {
+      var hello = state.lastHello;
+      if (hello && hello.tabId === tabId && hello.at >= since) {
+        resolve(true);
+        return;
+      }
+      if (Date.now() >= deadline) {
+        resolve(false);
+        return;
+      }
+      setTimeout(check, 150);
+    }
+    check();
+  });
+}
+
+/**
+ * 下发 run 指令，并在收不到 content script 的 accepted 回执时重试一次。
+ *
+ * 指令投递是「尽力而为」的：若目标文档正在卸载，`port.postMessage` 可能投到旧文档，
+ * `chrome.tabs.sendMessage` 失败也会被 catch 吞掉。因此必须自己等回执——超时重试一次，
+ * 仍无回执就报错并释放任务，避免 currentTask 永久悬挂把扩展卡死。
+ *
+ * @param {Object} task 任务对象
+ * @param {Object} profile 站点配置
+ * @param {string} prompt 提示词
+ */
+function dispatchRun(task, profile, prompt) {
+  task.runMessage = {
+    action: 'run',
+    requestId: task.requestId,
+    prompt: prompt,
+    timeoutMs: task.timeoutMs,
+    profile: profile
+  };
+  sendToContent(task.tabId, task.runMessage);
+  scheduleAcceptTimeout(task);
+}
+
+/**
+ * 安排「等待 accepted 回执」的定时器：超时先重试下发一次，再超时则判定失败并释放任务。
+ * @param {Object} task 任务对象
+ */
+function scheduleAcceptTimeout(task) {
+  if (task.acceptedTimer) {
+    clearTimeout(task.acceptedTimer);
+  }
+  task.acceptedTimer = setTimeout(function () {
+    if (state.currentTask !== task) {
+      return;
+    }
+    if (task.retried) {
+      failCurrentTask('accepted_timeout', '指令未能送达页面（content script 未确认接收），请重试');
+      return;
+    }
+    task.retried = true;
+    console.warn('[oap] 未收到 content script 的 accepted 回执，重试下发一次');
+    sendToContent(task.tabId, task.runMessage);
+    scheduleAcceptTimeout(task);
+  }, ACCEPT_TIMEOUT_MS);
 }
 
 /**
@@ -685,9 +851,20 @@ function finishCurrentTask(text, finishReason) {
  * @param {Object} task 任务对象
  */
 function clearTaskTimers(task) {
-  if (task && task.netTimer) {
+  if (!task) {
+    return;
+  }
+  if (task.netTimer) {
     clearTimeout(task.netTimer);
     task.netTimer = null;
+  }
+  if (task.acceptedTimer) {
+    clearTimeout(task.acceptedTimer);
+    task.acceptedTimer = null;
+  }
+  if (task.taskTimer) {
+    clearTimeout(task.taskTimer);
+    task.taskTimer = null;
   }
 }
 
@@ -705,6 +882,8 @@ function onContentMessage(message, tabId) {
   var task = state.currentTask;
 
   if (message.action === 'hello') {
+    // 记录新文档 content script 的就绪时刻：会话重置导航后据此等待新页面可用
+    state.lastHello = { tabId: tabId, at: Date.now() };
     broadcastStatus();
     return;
   }
@@ -717,7 +896,15 @@ function onContentMessage(message, tabId) {
       console.info('[oap] ' + message.message);
       return;
     case 'accepted':
-      // 任务已启动，取消网络信号宽限定时器的意义在于等待首个信号，此处仅记录
+      // content script 已确认接收任务：清掉「等待回执」定时器，任务转入正常流程
+      if (task.requestId !== message.requestId) {
+        return;
+      }
+      task.accepted = true;
+      if (task.acceptedTimer) {
+        clearTimeout(task.acceptedTimer);
+        task.acceptedTimer = null;
+      }
       return;
     case 'net_signal':
     case 'net_done':
@@ -745,6 +932,11 @@ function onContentMessage(message, tabId) {
     case 'done':
       if (task.requestId !== message.requestId) {
         return;
+      }
+      // content 带回「下一轮前需要开启新对话」标记：等下一次任务到来时由本侧导航，
+      // 使「导航 → 等就绪 → 下发」严格串行，不会与紧接而来的下一轮请求抢跑。
+      if (message.needNewChat) {
+        state.pendingNewChat = tabId;
       }
       finishCurrentTask(message.text || '', message.finishReason);
       return;
@@ -986,7 +1178,11 @@ chrome.runtime.onConnect.addListener(function (port) {
       onContentMessage(message, tabId);
     });
     port.onDisconnect.addListener(function () {
-      contentPorts.delete(tabId);
+      // 仅当映射里存的仍是这个 port 时才删除：页面刷新时旧文档的 disconnect 可能
+      // 晚于新文档的 connect 到达，无条件删除会把刚建立的新 port 一并清掉。
+      if (contentPorts.get(tabId) === port) {
+        contentPorts.delete(tabId);
+      }
     });
     return;
   }

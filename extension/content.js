@@ -25,8 +25,7 @@
     // 仍按渲染延迟处理（继续用短窗口）；超出之后还在增长，则判定该信号不代表答案流结束。
     netDoneRenderGraceMs: 1000,
     startGraceMs: 3000,     // 任务开始后的最短观察时间，防止过早收尾
-    elementTimeoutMs: 15000, // 等待输入框/发送按钮出现的上限
-    newChatDelayMs: 300       // 回复回传后、跳转新对话页前的等待时间（先让结果消息送出，再整页导航）
+    elementTimeoutMs: 15000  // 等待输入框/发送按钮出现的上限
   };
 
   /** 宽松基线探测所需的最小当前文本长度：低于此值匹配结果不可信 */
@@ -48,12 +47,6 @@
   var netTextLength = 0;
   /** 「探测无果」诊断日志的节流时间戳 */
   var pickNullDiagAt = 0;
-  /** 「开启新对话（整页跳转）」流程的进行中的 Promise；为 null 表示当前无导航动作。
-   *  下一次任务开始前需等待其结束，避免整页导航与「发送新请求」在页面上互相干扰。 */
-  var resetPromise = null;
-  /** 上一轮「开启新对话」是否已成功发起；下一条请求发送前据此决定是否补做一次跳转，
-   *  避免静默带着旧上下文继续。初始为 true。 */
-  var lastResetOk = true;
 
   // ------------------------------------------------------------------ 基础工具
 
@@ -1479,87 +1472,14 @@
   // ------------------------------------------------------------------ 任务执行
 
   /**
-   * 计算「新对话页」的 URL：站点根路径（origin + '/'）。
+   * 会话重置（开启新对话）由 Service Worker 主导：
+   * 本脚本在每条回复回传后仅在 `done` 消息里带上 `needNewChat` 标记，
+   * 由 background 在「下一次任务真正到来时」先导航回站点根路径、等新页面就绪后再下发任务。
    *
-   * 设计目的：本扩展把每条请求都当作「一次性会话」处理——发送 → 提取 → 开启新对话。
-   * 每轮回复提取完成并回传给网关之后，Content Script 直接把页面整页导航回站点根路径
-   *（新对话页），旧对话保留在站点历史记录中不再使用。相比「删除旧会话」，该方式不依赖
-   * 任何站点 DOM 与选择器，站点改版也不会失效；代价是每次会整页刷新一次（content script
-   * 随新文档重建，因此 background 在下发任务前增加了标签页加载保护，见 background.js）。
-   *
-   * @returns {string|null} 新对话页 URL；无法解析 origin 时返回 null
-   */
-  function newChatUrl() {
-    try {
-      var origin = location.origin;
-      // 部分场景（about:、file:、sandbox 页等）origin 为 "null"，无法据此导航
-      if (!origin || origin === 'null') {
-        return null;
-      }
-      return origin + '/';
-    } catch (err) {
-      return null;
-    }
-  }
-
-  /**
-   * 开启新对话：把当前页面整页导航回站点根路径。
-   *
-   * 无条件执行——不判断当前是否已在新对话页。DeepSeek 等 SPA 更新 URL 存在时序延迟，
-   * 按 URL 判断可能漏重置，导致下一轮请求落在旧会话里；统一跳转可杜绝该问题。
-   * 已在新对话页时跳转等价于一次普通刷新，语义上无副作用。
-   *
-   * 任一步失败只记录告警并返回 false，绝不影响本次已提取到的回复内容。
-   *
-   * @returns {Promise<boolean>} 已发起导航返回 true
-   */
-  async function startNewConversation() {
-    var url = newChatUrl();
-    if (!url) {
-      log('开启新对话失败：无法解析站点根路径（origin 无效）', 'warn');
-      return false;
-    }
-    var before = location.href;
-    // 先等一小段，确保刚回传的结果消息已送出，再触发整页导航
-    await sleep(CFG.newChatDelayMs);
-    log('开启新对话：跳转到新对话页 ' + url);
-    location.assign(url);
-    // 防御：导航成功后当前文档会卸载，下面的代码不会执行；若仍停留在此处，
-    // 说明导航未发生（被页面脚本阻止等），据此判定结果，交由下一轮请求发送前补做。
-    await sleep(CFG.newChatDelayMs);
-    if (before === url && location.href === before) {
-      // 本来就在新对话页，即使刷新被阻止也不影响会话的干净性
-      return true;
-    }
-    log('开启新对话失败：页面未发生导航', 'warn');
-    return false;
-  }
-
-  /**
-   * 异步触发「开启新对话」，并把 Promise 记录在 resetPromise 上，
-   * 供下一次任务开始前排队等待（防止整页导航与新请求在页面上互相干扰）。
-   * 过程中抛出的任何异常都被吞掉，只留告警日志。
-   */
-  function scheduleNewConversation() {
-    resetPromise = startNewConversation()
-      .then(function (ok) {
-        // 记录上一轮结果，供下一条请求发送前校验，避免静默带着旧上下文
-        lastResetOk = (ok === true);
-        if (!lastResetOk) {
-          log('上一条请求的「开启新对话」未成功，下一条请求发送前会再次尝试', 'warn');
-        }
-        return ok;
-      })
-      .catch(function (err) {
-        log('开启新对话异常：' + ((err && err.message) || err), 'warn');
-        lastResetOk = false;
-        return false;
-      })
-      .then(function (ok) {
-        resetPromise = null;
-        return ok;
-      });
-  }
+   * 为什么不再由本脚本自行跳转：上一版在回传后立刻 `location.assign` 整页跳转，
+   * 与客户端紧接着发起的下一轮请求形成竞态——跳转尚未起步时 `tab.status` 仍是
+   * complete，background 的等待逻辑会立即放行，任务被投递到正在卸载的旧文档后
+   * 无声丢失，表现为「工具执行后扩展不再继续发送」。
 
   /**
    * 结束当前任务并上报最终结果。
@@ -1598,7 +1518,11 @@
       action: 'done',
       requestId: current.requestId,
       text: text,
-      finishReason: finishReason
+      finishReason: finishReason,
+      // 本条结果回传后，下一轮任务开始前需要「开启新对话」（由 background 执行导航）。
+      // 不在这里直接跳转：本脚本整页跳转会与紧接着到达的下一轮请求抢跑，
+      // 导致任务被投递到正在卸载的旧文档后无声丢失。
+      needNewChat: true
     };
 
     // 诊断：输出回复容器的标签/class 与命中的思考块，便于定位「答案丢失」类问题
@@ -1621,13 +1545,9 @@
       // 诊断失败不影响主流程
     }
 
+    // 结果已回传；会话重置标记已在 payload 中交给 background 处理，
+    // 避免本脚本跳转与下一轮请求抢跑。
     report(payload);
-
-    // 结果已回传后，再开启新对话：
-    //   - 放在上报之后，不增加接口响应延迟；
-    //   - 失败只告警，不影响本次结果（见 startNewConversation 注释）。
-    // 页面会整页跳转到新对话页，下一个请求即在干净会话中发起。
-    scheduleNewConversation();
   }
 
   /**
@@ -1874,28 +1794,8 @@
       report({ action: 'error', requestId: requestId, code: 'busy', message: '当前页面已有任务在执行' });
       return;
     }
-    // 上一轮的「开启新对话」若仍在进行（整页跳转尚未发生），先等它结束再操作页面，
-    // 否则会出现「刚发起跳转就被新请求填入文本 / 新回复渲染到即将被替换的会话里」。
-    if (resetPromise) {
-      log('上一轮「开启新对话」尚未结束，等待其完成后再发送', 'debug');
-      await resetPromise;
-    }
-    // 上一轮若未能成功发起跳转（origin 无效等），在发送新请求前再尝试一次，
-    // 杜绝「新请求落在残留的旧会话里、与上一轮上下文串线」这一偶发问题。
-    if (!lastResetOk) {
-      log('检测到上一轮「开启新对话」未成功，发送前再次尝试', 'warn');
-      var fixed = await startNewConversation();
-      lastResetOk = fixed === true;
-      if (!lastResetOk) {
-        // 仍无法跳转：继续发送但明确告警，让调用方知道本条可能携带旧上下文
-        report({
-          action: 'warn',
-          requestId: requestId,
-          code: 'reset_failed',
-          message: '开启新对话失败，本条请求可能携带上一轮旧上下文'
-        });
-      }
-    }
+    // 会话重置（开启新对话）已由 background 在派发本条任务之前完成：
+    // 它会先导航回站点根路径、等新页面就绪，再下发 run，因此这里无需再做任何等待。
     var input = null;
     if (profile.inputSelector) {
       input = await waitForElement(profile.inputSelector, CFG.elementTimeoutMs);
