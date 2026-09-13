@@ -163,19 +163,24 @@
 
   /**
    * 逐行处理 SSE 文本，识别事件边界并上报信号。
+   *
+   * 返回值用于让调用方区分「这条流是否真的产生过内容」——SSE 里除数据行外还有
+   * 心跳（空 `data:`、注释行）与结束标记 `[DONE]`，只有数据行才代表模型真的在输出。
+   *
    * @param {string} line 单行文本
    * @param {string} url 请求地址
+   * @returns {string|null} 'data'=携带实际数据；'done'=流结束标记；null=心跳/空行
    */
   function handleLine(line, url) {
     if (!line) {
-      return;
+      return null;
     }
     if (line.indexOf('data:') !== 0) {
-      return;
+      return null;
     }
     var payload = line.slice(5).trim();
     if (!payload) {
-      return;
+      return null;
     }
     // 「有数据流动」每条流只上报一次，避免逐 token 刷消息
     if (!state.signalSent) {
@@ -184,8 +189,7 @@
     }
 
     if (payload === '[DONE]') {
-      post({ type: 'net_done', url: url });
-      return;
+      return 'done';
     }
     if (state.withText) {
       var text = extractText(payload);
@@ -193,6 +197,7 @@
         post({ type: 'net_text', url: url, text: text });
       }
     }
+    return 'data';
   }
 
   /**
@@ -210,14 +215,30 @@
     }
     var decoder = new TextDecoder('utf-8');
     var buffer = '';
+    // 本流是否真的推送过内容。会话查询、预检、心跳等空响应也会命中 URL 正则，
+    // 若它们结束就上报 net_done，content 侧会拿到伪「流结束」信号，把仍在生成的
+    // 答案误判为完成（表现为「生成到一半就结束」）。因此只对产生过数据的流上报结束。
+    var sawData = false;
+    // 是否已发过结束信号：`[DONE]` 与流 EOF 往往接连到达，去重避免重复上报
+    var doneSent = false;
     // 每条流独立统计「已上报信号」，否则第二条流起将不再上报
     state.signalSent = false;
+
+    function consume(line) {
+      var kind = handleLine(line, url);
+      if (kind === 'data') {
+        sawData = true;
+      } else if (kind === 'done' && sawData && !doneSent) {
+        doneSent = true;
+        post({ type: 'net_done', url: url });
+      }
+    }
 
     function flushRemainder() {
       var rest = buffer.trim();
       buffer = '';
       if (rest) {
-        handleLine(rest, url);
+        consume(rest);
       }
     }
 
@@ -227,7 +248,10 @@
         .then(function (result) {
           if (result.done) {
             flushRemainder();
-            post({ type: 'net_done', url: url });
+            if (sawData && !doneSent) {
+              doneSent = true;
+              post({ type: 'net_done', url: url });
+            }
             return;
           }
           buffer += decoder.decode(result.value, { stream: true });
@@ -235,7 +259,7 @@
           while (index !== -1) {
             var line = buffer.slice(0, index).trim();
             buffer = buffer.slice(index + 1);
-            handleLine(line, url);
+            consume(line);
             index = buffer.indexOf('\n');
           }
           loop();
@@ -297,6 +321,8 @@
       var url = '';
       var lastLength = 0;
       var tracked = false;
+      // 本次请求是否读到过响应内容（用于过滤空响应/预检请求的结束信号）
+      var sawData = false;
 
       var nativeOpen = xhr.open.bind(xhr);
       var nativeSend = xhr.send.bind(xhr);
@@ -365,6 +391,7 @@
               if (text.length > lastLength) {
                 var delta = text.slice(lastLength);
                 lastLength = text.length;
+                sawData = true;
                 post({ type: 'net_signal', url: url });
                 post({ type: 'net_text', url: url, text: delta });
               }
@@ -373,7 +400,11 @@
             }
           });
           xhr.addEventListener('load', function () {
-            post({ type: 'net_done', url: url });
+            // 只对读到过内容的请求上报结束：会话查询、预检等空响应命中 URL 正则时
+            // 若也上报，content 会误判为「答案流已结束」而把生成中的回答截断。
+            if (sawData) {
+              post({ type: 'net_done', url: url });
+            }
           });
           xhr.addEventListener('error', function () {
             post({ type: 'net_error', url: url, message: 'xhr error' });

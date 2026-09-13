@@ -831,8 +831,14 @@ function onDebuggerEvent(source, method, params) {
   if (method === 'Network.loadingFinished' || method === 'Network.loadingFailed') {
     if (session.tracked.has(params.requestId)) {
       session.tracked.delete(params.requestId);
-      sendToContent(session.tabId, { action: 'net_done_external' });
-      detachDebugger(session.tabId);
+      // 只有「所有被跟踪的请求都已结束」才判定流结束。
+      // 被跟踪的集合里常同时包含思考流、会话查询、心跳等辅助请求，任一结束就上报
+      // 会让 content 误判为「答案已生成完毕」，从而把仍在生成的回答截断
+      //（表现为「生成到一半就结束」）。待集合清空再上报可保证等到最长的那条流。
+      if (session.tracked.size === 0) {
+        sendToContent(session.tabId, { action: 'net_done_external' });
+        detachDebugger(session.tabId);
+      }
     }
   }
 }

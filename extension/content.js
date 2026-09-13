@@ -21,6 +21,9 @@
     // 以容忍深度思考等场景下的长自然停顿，避免把未输出完的内容误判为完成。
     stablePollsAfterNet: 6, // 已收到流结束信号后，需连续 6 次轮询(约2.4s)文本无变化才算完成
     stablePollsDomOnly: 25, // 无网络信号时，需连续 25 次轮询(约10s)文本无变化才算完成
+    // 收到流结束信号后允许的「前端渲染滞后」宽限：信号之后在这段时间内文本还在增长，
+    // 仍按渲染延迟处理（继续用短窗口）；超出之后还在增长，则判定该信号不代表答案流结束。
+    netDoneRenderGraceMs: 1000,
     startGraceMs: 3000,     // 任务开始后的最短观察时间，防止过早收尾
     elementTimeoutMs: 15000, // 等待输入框/发送按钮出现的上限
     newChatDelayMs: 300       // 回复回传后、跳转新对话页前的等待时间（先让结果消息送出，再整页导航）
@@ -1809,6 +1812,20 @@
     //   - 流式站点（已收到 net_done）：流真结束后只需较短连续稳定窗口，给 DOM 渲染留缓冲；
     //   - 无网络信号站点：需很长连续稳定窗口，容忍深度思考的自然长停顿，避免提前截断。
     var requiredPolls = job.netDone ? CFG.stablePollsAfterNet : CFG.stablePollsDomOnly;
+    // 关键守卫：若「网络结束信号之后」页面文本仍在增长（且超出前端渲染滞后的宽限），
+    // 说明该信号并不代表答案流结束。常见伪信号来源：
+    //   - 辅助请求（会话查询、预检、心跳）先于答案流结束；
+    //   - debugger 降级路径对「任意一个被跟踪请求」结束即上报；
+    //   - 嗅探读取异常。
+    // 若不撤销，稳定窗口会从 10s 骤降到 2.4s，模型在生成中途的正常停顿（深度思考切段、
+    // 长回答的分段渲染）就会被误判为「已完成」——表现为「生成到一半就结束」。
+    if (job.netDone && job.netDoneAt && job.lastChangeAt > job.netDoneAt + CFG.netDoneRenderGraceMs) {
+      requiredPolls = CFG.stablePollsDomOnly;
+      if (!job.netSignalDistrusted) {
+        job.netSignalDistrusted = true;
+        log('网络结束信号之后文本仍在增长，判定该信号不代表答案流结束，恢复长稳定窗口', 'warn');
+      }
+    }
     if (job.hasContent && job.stablePolls >= requiredPolls && elapsed >= CFG.startGraceMs) {
       // 旧内容校验：虚拟列表重建节点后，含旧回复全文的新节点不在快照中，
       // 其文本会被整体误当作新内容（表现为「第二次返回第一次的回复」）。
@@ -1962,6 +1979,8 @@
       lastText: '',
       hasContent: false,
       netDone: false,
+      netDoneAt: 0,             // 收到流结束信号的时间戳，用于判断信号之后文本是否仍在增长
+      netSignalDistrusted: false, // 是否已判定该结束信号不可信（仅用于日志去重）
       stablePolls: 0,
       element: null,
       signalReported: false,
@@ -2002,12 +2021,15 @@
     }
     if (data.type === 'net_done') {
       job.netDone = true;
+      job.netDoneAt = Date.now();
       report({ action: 'net_done', requestId: job.requestId });
       return;
     }
     if (data.type === 'net_error') {
-      job.netDone = true; // 嗅探失败时直接交给 DOM 稳定判定兜底
-      report({ action: 'net_done', requestId: job.requestId });
+      // 嗅探读取失败**不等于**答案流结束：只记日志，绝不置 netDone——
+      // 置了会把稳定窗口从 10s 缩到 2.4s，若此时答案仍在生成就会被截断。
+      // 交给 DOM 稳定判定（长窗口）兜底更安全。
+      log('网络嗅探读取失败（不影响 DOM 文本提取，结束判定退回长窗口）：' + (data.message || ''), 'warn');
     }
   }
 
@@ -2044,6 +2066,7 @@
     if (message.action === 'net_done_external') {
       if (job && !job.netDone) {
         job.netDone = true;
+        job.netDoneAt = Date.now();
         report({ action: 'net_done', requestId: job.requestId, source: 'debugger' });
       }
       return;
