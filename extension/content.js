@@ -23,24 +23,7 @@
     stablePollsDomOnly: 25, // 无网络信号时，需连续 25 次轮询(约10s)文本无变化才算完成
     startGraceMs: 3000,     // 任务开始后的最短观察时间，防止过早收尾
     elementTimeoutMs: 15000, // 等待输入框/发送按钮出现的上限
-    resetStepTimeoutMs: 8000, // 会话重置：等待每一步目标元素出现的上限（放宽以减少偶发超时）
-    resetStepDelayMs: 400,    // 会话重置：每步点击后的等待时间（等下拉菜单/弹窗渲染）
-    resetFinalDelayMs: 800    // 会话重置：最后一步点击后的等待时间（等页面回到新对话页）
-  };
-
-  /**
-   * 会话重置（删除当前对话）各步骤的内置默认选择器。
-   * 默认值为 DeepSeek 网页版的「会话项菜单 → 删除 → 确认删除」三步路径；
-   * 站点配置（profile）中存在同名配置时优先使用配置值，配置留空才回落到此处。
-   * 删除完成后页面会自动回到新对话页，下一个请求因此在干净会话中发起。
-   */
-  var DEFAULT_RESET_SELECTORS = {
-    convMoreSelector:
-      '#root > div > div.c3ecdb44 > div.dc04ec1d > div > div._3586175.ds-scroll-area.ds-scroll-area--show-on-focus-within.ds-scroll-area--enabled > div._6d215eb.ds-scroll-area.ds-scroll-area--show-on-focus-within.ds-scroll-area--enabled > div > div:nth-child(1) > a._546d736.b64fb9ae > div._254829d > div > div.ds-button__background',
-    convDeleteSelector:
-      'body > div:nth-child(5) > div > div > div.ds-dropdown-menu-option.ds-dropdown-menu-option--error.ds-dropdown-menu-option--pending',
-    convConfirmSelector:
-      'body > div.ds-theme.ds-modal-wrapper > div > div.ds-modal-focus-lock > div > div.ds-modal-content__footer > div > div.ds-button.ds-button--error.ds-button--filled.ds-button--capsule.ds-button--m.ds-button--icon-relative-m.ds-button--min-width._0efab74 > span'
+    newChatDelayMs: 300       // 回复回传后、跳转新对话页前的等待时间（先让结果消息送出，再整页导航）
   };
 
   /** 宽松基线探测所需的最小当前文本长度：低于此值匹配结果不可信 */
@@ -62,11 +45,11 @@
   var netTextLength = 0;
   /** 「探测无果」诊断日志的节流时间戳 */
   var pickNullDiagAt = 0;
-  /** 会话重置流程的进行中的 Promise；为 null 表示当前无清理动作。
-   *  下一次任务开始前需等待其结束，避免「删除旧会话」与「发送新请求」在页面上互相干扰。 */
+  /** 「开启新对话（整页跳转）」流程的进行中的 Promise；为 null 表示当前无导航动作。
+   *  下一次任务开始前需等待其结束，避免整页导航与「发送新请求」在页面上互相干扰。 */
   var resetPromise = null;
-  /** 上一轮会话清理是否成功；下一条请求发送前据此决定是否补做一次清理，
-   *  避免静默带着旧上下文继续（即「有的对话删不掉」的根因之一）。初始为 true。 */
+  /** 上一轮「开启新对话」是否已成功发起；下一条请求发送前据此决定是否补做一次跳转，
+   *  避免静默带着旧上下文继续。初始为 true。 */
   var lastResetOk = true;
 
   // ------------------------------------------------------------------ 基础工具
@@ -139,46 +122,6 @@
         }
         if (Date.now() >= deadline) {
           resolve(null);
-          return;
-        }
-        setTimeout(attempt, 200);
-      }
-      attempt();
-    });
-  }
-
-  /**
-   * 等待某个选择器对应的元素出现且可见（用于下拉菜单、模态框等动态弹出的元素）。
-   *
-   * 与 waitForElement 的区别：额外校验可见性，避免在元素已挂载但尚未渲染
-   * （透明、零尺寸、display:none）时就点击，导致「点了没反应」。
-   * 超时兜底：若元素已存在但可见性判定始终不通过，仍返回该元素交由点击环节处理，
-   * 防止某些站点用 opacity 动画遮挡导致永远等不到。
-   *
-   * @param {string} selector CSS 选择器
-   * @param {number} timeout 最长等待时间（毫秒）
-   * @returns {Promise<Element|null>} 可用的元素，超时且元素不存在时返回 null
-   */
-  function waitForVisibleElement(selector, timeout) {
-    if (!selector) {
-      return Promise.resolve(null);
-    }
-    var deadline = Date.now() + timeout;
-    return new Promise(function (resolve) {
-      function attempt() {
-        var el = null;
-        try {
-          el = document.querySelector(selector);
-        } catch (err) {
-          resolve(null); // 选择器非法
-          return;
-        }
-        if (el && isVisible(el)) {
-          resolve(el);
-          return;
-        }
-        if (Date.now() >= deadline) {
-          resolve(el);
           return;
         }
         setTimeout(attempt, 200);
@@ -1444,155 +1387,79 @@
   // ------------------------------------------------------------------ 任务执行
 
   /**
-   * 删除当前会话并回到新对话页。
+   * 计算「新对话页」的 URL：站点根路径（origin + '/'）。
    *
-   * 设计目的：本扩展把每条请求都当作「一次性会话」处理——发送 → 提取 → 删除。
-   * 这样下一个请求始终在全新会话中发起，可避免两类问题：
-   *   1) 调用方（CLI）维护的上下文与网页侧残留的多轮上下文冲突；
-   *   2) 页面上残留的旧回复干扰 DOM 差异探测，导致内容提取错位。
+   * 设计目的：本扩展把每条请求都当作「一次性会话」处理——发送 → 提取 → 开启新对话。
+   * 每轮回复提取完成并回传给网关之后，Content Script 直接把页面整页导航回站点根路径
+   *（新对话页），旧对话保留在站点历史记录中不再使用。相比「删除旧会话」，该方式不依赖
+   * 任何站点 DOM 与选择器，站点改版也不会失效；代价是每次会整页刷新一次（content script
+   * 随新文档重建，因此 background 在下发任务前增加了标签页加载保护，见 background.js）。
    *
-   * 执行路径共三步（站点可在弹窗中自行配置选择器，留空则使用内置默认值）：
-   *   1. 点击会话项菜单按钮（打开下拉菜单）；
-   *   2. 点击菜单中的「删除」项（弹出确认框）；
-   *   3. 点击确认框中的删除按钮（删除后页面自动回到新对话页）。
-   *
-   * 任一步失败只记录告警并返回 false，绝不影响本次已提取到的回复内容。
-   *
-   * @param {Object} profile 站点配置
-   * @returns {Promise<boolean>} 三步全部完成返回 true
+   * @returns {string|null} 新对话页 URL；无法解析 origin 时返回 null
    */
-  /**
-   * 从当前页面 URL 提取 DeepSeek 风格会话 id。
-   * 会话页形如 https://chat.deepseek.com/a/chat-<id>，新对话页为根路径（无 id）。
-   * 返回 id 字符串，若处于新对话页则返回 null。
-   * @returns {string|null}
-   */
-  function getCurrentConversationId() {
+  function newChatUrl() {
     try {
-      var m = String(location.href || '').match(/\/a\/chat-([A-Za-z0-9_-]+)/);
-      return m ? m[1] : null;
+      var origin = location.origin;
+      // 部分场景（about:、file:、sandbox 页等）origin 为 "null"，无法据此导航
+      if (!origin || origin === 'null') {
+        return null;
+      }
+      return origin + '/';
     } catch (err) {
       return null;
     }
   }
 
   /**
-   * 基于当前会话 id 构造「当前会话项的菜单按钮」选择器（默认选择器未命中时的回退）。
-   * DeepSeek 侧边栏每个会话项都是 <a href="/a/chat-<id>">，其内包含菜单按钮。
-   * 这样无论当前会话在侧边栏第几位都能精准命中，避免写死的 :nth-child(1) 删错会话。
-   * @param {string} convId 会话 id
-   * @returns {string} CSS 选择器
-   */
-  function currentConversationMoreSelector(convId) {
-    return 'a[href*="/a/chat-' + convId + '"] .ds-button__background';
-  }
-
-  /**
-   * 执行一轮「三步点击删除当前会话」。
-   * 第一步（会话项菜单按钮）若默认/配置选择器超时，自动回退到「基于当前会话 id 定位」。
-   * 任一步失败立即返回 false，由外层调用方决定是否重试。
-   * @param {Object} profile 站点配置
-   * @param {string|null} convId 当前会话 id（用于回退定位）
-   * @returns {Promise<boolean>}
-   */
-  async function doResetOnce(profile, convId) {
-    var config = profile || {};
-    var steps = [
-      {
-        name: '会话项菜单按钮',
-        selector: config.convMoreSelector || DEFAULT_RESET_SELECTORS.convMoreSelector
-      },
-      {
-        name: '删除菜单项',
-        selector: config.convDeleteSelector || DEFAULT_RESET_SELECTORS.convDeleteSelector
-      },
-      {
-        name: '确认删除按钮',
-        selector: config.convConfirmSelector || DEFAULT_RESET_SELECTORS.convConfirmSelector
-      }
-    ];
-
-    for (var i = 0; i < steps.length; i += 1) {
-      var step = steps[i];
-      if (!step.selector) {
-        log('会话重置中断：未配置「' + step.name + '」选择器', 'warn');
-        return false;
-      }
-      var el = await waitForVisibleElement(step.selector, CFG.resetStepTimeoutMs);
-      // 第一步额外回退：用「当前会话 id」定位侧边栏里真正当前的会话项，
-      // 解决写死 :nth-child(1) 在并发/多会话时命中错误项导致删除失败的问题。
-      if (!el && i === 0 && convId) {
-        var fb = currentConversationMoreSelector(convId);
-        log('会话重置：默认菜单选择器未命中，回退到当前会话定位：' + fb, 'debug');
-        el = await waitForVisibleElement(fb, CFG.resetStepTimeoutMs);
-      }
-      if (!el) {
-        log('会话重置中断：等待「' + step.name + '」超时，选择器：' + step.selector, 'warn');
-        return false;
-      }
-      if (!clickElement(el)) {
-        log('会话重置中断：点击「' + step.name + '」失败', 'warn');
-        return false;
-      }
-      // 最后一步多等一会儿，给页面完成删除并跳转回新对话页留出时间
-      await sleep(i === steps.length - 1 ? CFG.resetFinalDelayMs : CFG.resetStepDelayMs);
-    }
-    return true;
-  }
-
-  /**
-   * 删除「当前会话」并回到新对话页。
-   * 为应对 DeepSeek 页面渲染时序偶发波动（菜单/确认框弹出慢、点击落空），
-   * 内部对三步点击做整体重试（最多 MAX_RESET_RETRY 次），并在每次尝试后校验
-   * 页面是否已回到「新对话页」（URL 不再含会话 id）。全部失败才返回 false，
-   * 绝不影响本次已提取到的回复内容。
+   * 开启新对话：把当前页面整页导航回站点根路径。
    *
-   * @param {Object} profile 站点配置
-   * @returns {Promise<boolean>} 删除成功返回 true
+   * 无条件执行——不判断当前是否已在新对话页。DeepSeek 等 SPA 更新 URL 存在时序延迟，
+   * 按 URL 判断可能漏重置，导致下一轮请求落在旧会话里；统一跳转可杜绝该问题。
+   * 已在新对话页时跳转等价于一次普通刷新，语义上无副作用。
+   *
+   * 任一步失败只记录告警并返回 false，绝不影响本次已提取到的回复内容。
+   *
+   * @returns {Promise<boolean>} 已发起导航返回 true
    */
-  async function resetConversation(profile) {
-    var config = profile || {};
-    var MAX_RESET_RETRY = 3;
-    for (var attempt = 0; attempt < MAX_RESET_RETRY; attempt += 1) {
-      var convId = getCurrentConversationId();
-      var ok = await doResetOnce(config, convId);
-      if (!ok) {
-        log('会话重置单次未成功，准备重试（' + (attempt + 1) + '/' + MAX_RESET_RETRY + '）', 'warn');
-        await sleep(CFG.resetStepDelayMs);
-        continue;
-      }
-      // 删除后校验：页面应回到「新对话页」（URL 不含会话 id）。
-      // 若仍停留在会话页，说明可能删错项或页面未跳转，重试。
-      if (getCurrentConversationId() === null) {
-        log('会话重置完成：已删除当前对话，页面已回到新对话页');
-        return true;
-      }
-      log('会话重置后页面仍停留在会话页，可能删错项，重试（' + (attempt + 1) + '/' + MAX_RESET_RETRY + '）', 'warn');
-      await sleep(CFG.resetStepDelayMs);
+  async function startNewConversation() {
+    var url = newChatUrl();
+    if (!url) {
+      log('开启新对话失败：无法解析站点根路径（origin 无效）', 'warn');
+      return false;
     }
-    log('会话重置多次重试后仍失败，请检查弹窗中的三步删除选择器', 'warn');
+    var before = location.href;
+    // 先等一小段，确保刚回传的结果消息已送出，再触发整页导航
+    await sleep(CFG.newChatDelayMs);
+    log('开启新对话：跳转到新对话页 ' + url);
+    location.assign(url);
+    // 防御：导航成功后当前文档会卸载，下面的代码不会执行；若仍停留在此处，
+    // 说明导航未发生（被页面脚本阻止等），据此判定结果，交由下一轮请求发送前补做。
+    await sleep(CFG.newChatDelayMs);
+    if (before === url && location.href === before) {
+      // 本来就在新对话页，即使刷新被阻止也不影响会话的干净性
+      return true;
+    }
+    log('开启新对话失败：页面未发生导航', 'warn');
     return false;
   }
 
   /**
-   * 异步触发会话重置，并把 Promise 记录在 resetPromise 上，
-   * 供下一次任务开始前排队等待（防止清理动作与新请求在页面上互相干扰）。
-   * 清理过程中抛出的任何异常都被吞掉，只留告警日志。
-   *
-   * @param {Object} profile 站点配置
+   * 异步触发「开启新对话」，并把 Promise 记录在 resetPromise 上，
+   * 供下一次任务开始前排队等待（防止整页导航与新请求在页面上互相干扰）。
+   * 过程中抛出的任何异常都被吞掉，只留告警日志。
    */
-  function scheduleConversationReset(profile) {
-    resetPromise = resetConversation(profile)
+  function scheduleNewConversation() {
+    resetPromise = startNewConversation()
       .then(function (ok) {
-        // 记录上一轮清理结果，供下一条请求发送前校验，避免静默带着旧上下文
+        // 记录上一轮结果，供下一条请求发送前校验，避免静默带着旧上下文
         lastResetOk = (ok === true);
         if (!lastResetOk) {
-          log('上一条请求的会话清理失败，下一条请求发送前会再次尝试清理', 'warn');
+          log('上一条请求的「开启新对话」未成功，下一条请求发送前会再次尝试', 'warn');
         }
         return ok;
       })
       .catch(function (err) {
-        log('会话重置异常：' + ((err && err.message) || err), 'warn');
+        log('开启新对话异常：' + ((err && err.message) || err), 'warn');
         lastResetOk = false;
         return false;
       })
@@ -1664,11 +1531,11 @@
 
     report(payload);
 
-    // 结果已回传后，再后台清理本次会话：
+    // 结果已回传后，再开启新对话：
     //   - 放在上报之后，不增加接口响应延迟；
-    //   - 清理失败只告警，不影响本次结果（见 resetConversation 注释）。
-    // 清理完成后页面自动回到新对话页，下一个请求即在干净会话中发起。
-    scheduleConversationReset(current.profile);
+    //   - 失败只告警，不影响本次结果（见 startNewConversation 注释）。
+    // 页面会整页跳转到新对话页，下一个请求即在干净会话中发起。
+    scheduleNewConversation();
   }
 
   /**
@@ -1890,26 +1757,25 @@
       report({ action: 'error', requestId: requestId, code: 'busy', message: '当前页面已有任务在执行' });
       return;
     }
-    // 上一轮的会话清理（删除旧对话）可能仍在进行，必须等它结束再操作页面，
-    // 否则会出现「刚点完删除就被新请求填入文本 / 新回复渲染到即将被删的会话里」。
+    // 上一轮的「开启新对话」若仍在进行（整页跳转尚未发生），先等它结束再操作页面，
+    // 否则会出现「刚发起跳转就被新请求填入文本 / 新回复渲染到即将被替换的会话里」。
     if (resetPromise) {
-      log('上一轮会话重置尚未结束，等待其完成后再发送', 'debug');
+      log('上一轮「开启新对话」尚未结束，等待其完成后再发送', 'debug');
       await resetPromise;
     }
-    // 上一轮会话清理若失败（resetConversation 返回 false），在发送新请求前再尝试清理一次，
+    // 上一轮若未能成功发起跳转（origin 无效等），在发送新请求前再尝试一次，
     // 杜绝「新请求落在残留的旧会话里、与上一轮上下文串线」这一偶发问题。
-    // 这是修复「并发删除对话有的成功有的失败」的关键：不再静默带旧上下文。
     if (!lastResetOk) {
-      log('检测到上一轮会话清理失败，发送前再次尝试清理当前会话', 'warn');
-      var fixed = await resetConversation(profile);
+      log('检测到上一轮「开启新对话」未成功，发送前再次尝试', 'warn');
+      var fixed = await startNewConversation();
       lastResetOk = fixed === true;
       if (!lastResetOk) {
-        // 仍无法清理：继续发送但明确告警，让调用方知道本条可能携带旧上下文
+        // 仍无法跳转：继续发送但明确告警，让调用方知道本条可能携带旧上下文
         report({
           action: 'warn',
           requestId: requestId,
           code: 'reset_failed',
-          message: '会话清理失败，本条请求可能携带上一轮旧上下文，请检查弹窗中的三步删除选择器'
+          message: '开启新对话失败，本条请求可能携带上一轮旧上下文'
         });
       }
     }

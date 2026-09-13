@@ -473,6 +473,42 @@ function ensureContentScript(tabId) {
   });
 }
 
+/** 等待标签页加载完成的上限：上一轮结束后页面会整页跳转到新对话页，需等它加载完再注入 */
+var TAB_READY_TIMEOUT_MS = 10000;
+/** 轮询标签页加载状态的间隔 */
+var TAB_READY_POLL_MS = 200;
+
+/**
+ * 等待目标标签页加载完成。
+ *
+ * 背景：Content Script 在每条回复提取完成后会把页面整页跳转到「新对话页」，
+ * 此时标签页处于 loading 状态。若下一条请求恰好紧跟着到达，直接注入 content script
+ * 可能落到正在卸载的旧文档上而失败。这里在下发任务前先等标签页 ready。
+ *
+ * @param {number} tabId 标签页 id
+ * @returns {Promise<void>} 标签页 ready 或超时后 resolve（不阻塞，交由后续流程处理）
+ */
+function waitForTabReady(tabId) {
+  return new Promise(function (resolve) {
+    var deadline = Date.now() + TAB_READY_TIMEOUT_MS;
+    function check() {
+      chrome.tabs.get(tabId, function (tab) {
+        if (chrome.runtime.lastError || !tab) {
+          // 标签页已关闭等异常：直接返回，交由后续流程报错
+          resolve();
+          return;
+        }
+        if (tab.status !== 'loading' || Date.now() >= deadline) {
+          resolve();
+          return;
+        }
+        setTimeout(check, TAB_READY_POLL_MS);
+      });
+    }
+    check();
+  });
+}
+
 /**
  * 向指定标签页的 content script 发送消息。
  * @param {number} tabId 标签页 id
@@ -530,7 +566,12 @@ function executeTask(options) {
       });
       return null;
     }
-    return ensureContentScript(tab.id)
+    // 上一轮任务结束后页面会整页跳转到「新对话页」，先等标签页加载完成再注入，
+    // 避免 content script 落到正在卸载的旧文档上导致注入失败。
+    return waitForTabReady(tab.id)
+      .then(function () {
+        return ensureContentScript(tab.id);
+      })
       .then(function () {
         return ensureInjected(tab.id);
       })

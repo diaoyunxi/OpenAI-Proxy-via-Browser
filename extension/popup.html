@@ -68,25 +68,10 @@
       </p>
 
       <p class="tip">
-        会话重置：每条回复提取完成后按下面三步删除当前会话（删除后页面自动回到新对话页），
+        会话处理：每条回复提取完成后，页面会整页跳转回站点根路径（新对话页）并刷新，
         下一个请求即在全新会话中发起，避免多轮上下文与调用方上下文冲突。
-        三项都留空时使用内置默认值（DeepSeek 网页版）。
+        旧对话不会被删除，仍保留在站点历史记录中。该方式不依赖任何页面选择器，无需配置。
       </p>
-
-      <label class="field">
-        <span>会话项菜单按钮选择器</span>
-        <input id="conv-more-selector" type="text" placeholder="留空=内置默认（打开会话菜单）" />
-      </label>
-
-      <label class="field">
-        <span>删除菜单项选择器</span>
-        <input id="conv-delete-selector" type="text" placeholder="留空=内置默认（菜单里的删除项）" />
-      </label>
-
-      <label class="field">
-        <span>确认删除按钮选择器</span>
-        <input id="conv-confirm-selector" type="text" placeholder="留空=内置默认（确认框的删除按钮）" />
-      </label>
 
       <button id="btn-save-profile" class="btn btn-primary">保存当前站点配置</button>
       <span id="save-result" class="hint"></span>

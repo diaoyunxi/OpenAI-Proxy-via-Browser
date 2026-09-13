@@ -51,10 +51,6 @@ function renderProfile(profile) {
   $('send-selector').value = profile.sendSelector || '';
   $('response-selector').value = profile.responseSelector || '';
   $('url-pattern').value = profile.responseUrlPattern || '';
-  // 会话重置三项留空表示使用扩展内置默认值，故不做默认值填充
-  $('conv-more-selector').value = profile.convMoreSelector || '';
-  $('conv-delete-selector').value = profile.convDeleteSelector || '';
-  $('conv-confirm-selector').value = profile.convConfirmSelector || '';
   // 布尔项不能用 `|| ''` 兜底：未配置时为 undefined，语义即「关闭（只返回最终答案）」
   $('keep-thinking').checked = profile.keepThinking === true;
 }
@@ -69,9 +65,6 @@ function collectProfile() {
     sendSelector: $('send-selector').value.trim(),
     responseSelector: $('response-selector').value.trim(),
     responseUrlPattern: $('url-pattern').value.trim(),
-    convMoreSelector: $('conv-more-selector').value.trim(),
-    convDeleteSelector: $('conv-delete-selector').value.trim(),
-    convConfirmSelector: $('conv-confirm-selector').value.trim(),
     keepThinking: $('keep-thinking').checked
   };
 }
