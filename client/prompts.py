@@ -10,7 +10,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, List
+from typing import Any
 
 from .prompt_files import load_tool_call_format
 
@@ -25,7 +25,7 @@ def tool_call_instruction() -> str:
     return load_tool_call_format()
 
 
-def render_system(system_prompt: str, tool_specs: List[Dict[str, Any]]) -> str:
+def render_system(system_prompt: str, tool_specs: list[dict[str, Any]]) -> str:
     """构造最终发给模型的系统提示词。
 
     拼接顺序：用户自定义系统说明 -> 工具清单 -> 工具调用格式约定。
@@ -34,7 +34,7 @@ def render_system(system_prompt: str, tool_specs: List[Dict[str, Any]]) -> str:
     :param tool_specs: 工具说明列表（含 name/description/parameters）。
     :return: 拼接后的系统提示词；两者皆为空时返回空串
     """
-    parts: List[str] = []
+    parts: list[str] = []
     if system_prompt:
         parts.append(system_prompt.strip())
     if tool_specs:

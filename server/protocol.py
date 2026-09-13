@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """网关（Python）与 Chrome 扩展之间的 WebSocket 消息协议定义。
 
 协议版本：1

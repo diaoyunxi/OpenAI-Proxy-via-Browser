@@ -6,7 +6,8 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, Iterator
+from collections.abc import Iterator
+from typing import Any
 
 SSE_DONE = "[DONE]"
 
@@ -35,7 +36,7 @@ def parse_sse_lines(stream) -> Iterator[str]:
             yield line[len("data:"):].lstrip()
 
 
-def iter_sse_events(stream) -> Iterator[Dict[str, Any]]:
+def iter_sse_events(stream) -> Iterator[dict[str, Any]]:
     """把 SSE 数据流解析为事件字典生成器，遇到 ``[DONE]`` 终止。"""
     for payload in parse_sse_lines(stream):
         if payload == SSE_DONE:

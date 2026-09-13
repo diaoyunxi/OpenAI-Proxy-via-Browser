@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """浏览器桥接层：管理 WebSocket 连接池、任务派发、流式回传与超时控制。
 
 设计要点：
@@ -15,14 +14,14 @@ import asyncio
 import logging
 import time
 import uuid
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from typing import Any, AsyncIterator, Callable
-
-from fastapi import WebSocket, WebSocketDisconnect
-from fastapi.websockets import WebSocketState
+from typing import Any
 
 from config import GatewayConfig
+from fastapi import WebSocket, WebSocketDisconnect
+from fastapi.websockets import WebSocketState
 from protocol import (
     C2G_ACCEPTED,
     C2G_CHUNK,

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """网关服务的运行时配置。
 
 所有配置项均支持通过环境变量覆盖，便于在不同机器上直接部署而无需修改代码。
@@ -109,7 +108,7 @@ class GatewayConfig:
     allow_cors_any: bool
 
     @classmethod
-    def from_env(cls) -> "GatewayConfig":
+    def from_env(cls) -> GatewayConfig:
         """从环境变量构建配置对象。
 
         :return: 配置实例

@@ -11,10 +11,9 @@
 from __future__ import annotations
 
 import json
-import socket
 import urllib.error
 import urllib.request
-from typing import Any, Dict, Iterator, List, Optional
+from typing import Any
 
 from .sse import iter_sse_events
 
@@ -31,15 +30,15 @@ class OAPClient:
     """OpenAI-Proxy 网关的轻量客户端。"""
 
     def __init__(self, base_url: str = DEFAULT_BASE_URL, timeout: int = DEFAULT_TIMEOUT,
-                 default_host: Optional[str] = None, default_model: str = DEFAULT_MODEL):
+                 default_host: str | None = None, default_model: str = DEFAULT_MODEL):
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         self.default_host = default_host
         self.default_model = default_model
 
     # ---- 底层请求 ----
-    def _post(self, path: str, payload: Dict[str, Any],
-              extra_headers: Optional[Dict[str, str]] = None, stream: bool = False):
+    def _post(self, path: str, payload: dict[str, Any],
+              extra_headers: dict[str, str] | None = None, stream: bool = False):
         url = self.base_url + path
         data = json.dumps(payload).encode("utf-8")
         headers = {
@@ -56,7 +55,7 @@ class OAPClient:
             raise OAPError(f"网关返回 HTTP {e.code}: {body[:300]}") from e
         except urllib.error.URLError as e:
             raise OAPError(f"无法连接网关 {url}: {e.reason}") from e
-        except (TimeoutError, socket.timeout) as e:
+        except TimeoutError as e:
             raise OAPError(
                 f"网关请求超时（超过 {self.timeout} 秒未返回完整响应）。"
                 "请确认目标浏览器扩展已就绪并正被正常调用，"
@@ -64,38 +63,38 @@ class OAPClient:
             ) from e
 
     # ---- 高层接口 ----
-    def health(self) -> Dict[str, Any]:
+    def health(self) -> dict[str, Any]:
         """查询网关健康状态。"""
         req = urllib.request.Request(self.base_url + "/health", method="GET")
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as r:
                 return json.loads(r.read().decode("utf-8"))
-        except Exception as e:  # noqa: BLE001 - 统一转换为 OAPError
+        except Exception as e:
             raise OAPError(f"健康检查失败: {e}") from e
 
-    def models(self) -> Dict[str, Any]:
+    def models(self) -> dict[str, Any]:
         """获取模型列表。"""
         req = urllib.request.Request(self.base_url + "/v1/models", method="GET")
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as r:
                 return json.loads(r.read().decode("utf-8"))
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             raise OAPError(f"获取模型列表失败: {e}") from e
 
-    def chat(self, messages: List[Dict[str, str]], *,
-             model: Optional[str] = None, stream: bool = False,
-             timeout: Optional[int] = None, host: Optional[str] = None,
-             extra_headers: Optional[Dict[str, str]] = None) -> Any:
+    def chat(self, messages: list[dict[str, str]], *,
+             model: str | None = None, stream: bool = False,
+             timeout: int | None = None, host: str | None = None,
+             extra_headers: dict[str, str] | None = None) -> Any:
         """发起一次对话补全。
 
         ``stream=False`` 时返回完整响应 dict；``stream=True`` 时返回事件 dict 的生成器。
         """
-        payload: Dict[str, Any] = {
+        payload: dict[str, Any] = {
             "model": model or self.default_model,
             "messages": messages,
             "stream": stream,
         }
-        headers: Dict[str, str] = dict(extra_headers or {})
+        headers: dict[str, str] = dict(extra_headers or {})
         eff_host = host or self.default_host
         if eff_host:
             headers["X-OAP-Host"] = eff_host
@@ -106,7 +105,7 @@ class OAPClient:
             return iter_sse_events(resp)
         try:
             body = resp.read().decode("utf-8")
-        except (TimeoutError, socket.timeout) as e:
+        except TimeoutError as e:
             raise OAPError(
                 f"网关响应读取超时（超过 {self.timeout} 秒）。"
                 "请确认目标浏览器扩展已就绪并正被正常调用，"
@@ -117,7 +116,7 @@ class OAPClient:
         except json.JSONDecodeError as e:
             raise OAPError(f"响应不是合法 JSON: {body[:200]}") from e
 
-    def cancel(self, request_id: str) -> Dict[str, Any]:
+    def cancel(self, request_id: str) -> dict[str, Any]:
         """取消一个正在进行的请求。"""
         url = f"{self.base_url}/v1/cancel/{request_id}"
         req = urllib.request.Request(url, method="POST",
@@ -125,5 +124,5 @@ class OAPClient:
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as r:
                 return json.loads(r.read().decode("utf-8"))
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             raise OAPError(f"取消请求失败: {e}") from e
