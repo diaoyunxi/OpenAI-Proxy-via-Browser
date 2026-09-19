@@ -13,6 +13,17 @@ from __future__ import annotations
 import json
 import socket
 import urllib.error
+import urllib.parse
+
+# 允许的 URL scheme 白名单，防止 file:// / ftp:// 等非预期访问
+_ALLOWED_SCHEMES = {"http", "https"}
+
+
+def _validate_url_scheme(url: str) -> None:
+    """验证 URL scheme 是否在白名单内，防止 file:// 等非预期 scheme。"""
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme not in _ALLOWED_SCHEMES:
+        raise OAPError(f"不允许的 URL scheme '{parsed.scheme}'，仅支持 http/https")
 import urllib.request
 from typing import Any, Dict, Iterator, List, Optional
 
@@ -41,6 +52,7 @@ class OAPClient:
     def _post(self, path: str, payload: Dict[str, Any],
               extra_headers: Optional[Dict[str, str]] = None, stream: bool = False):
         url = self.base_url + path
+        _validate_url_scheme(url)
         data = json.dumps(payload).encode("utf-8")
         headers = {
             "Content-Type": "application/json",
@@ -66,6 +78,7 @@ class OAPClient:
     # ---- 高层接口 ----
     def health(self) -> Dict[str, Any]:
         """查询网关健康状态。"""
+        _validate_url_scheme(self.base_url + "/health")
         req = urllib.request.Request(self.base_url + "/health", method="GET")
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as r:
@@ -75,6 +88,7 @@ class OAPClient:
 
     def models(self) -> Dict[str, Any]:
         """获取模型列表。"""
+        _validate_url_scheme(self.base_url + "/v1/models")
         req = urllib.request.Request(self.base_url + "/v1/models", method="GET")
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as r:
@@ -120,6 +134,7 @@ class OAPClient:
     def cancel(self, request_id: str) -> Dict[str, Any]:
         """取消一个正在进行的请求。"""
         url = f"{self.base_url}/v1/cancel/{request_id}"
+        _validate_url_scheme(url)
         req = urllib.request.Request(url, method="POST",
                                      headers={"Content-Type": "application/json"})
         try:

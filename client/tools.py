@@ -118,6 +118,11 @@ def list_dir(path: str = ".", limit: int = 100) -> str:
 })
 def http_request(url: str, method: str = "GET", body: str = None) -> str:
     try:
+        # 验证 URL scheme，仅允许 http/https (Bandit B310)
+        from urllib.parse import urlparse
+        parsed = urlparse(url)
+        if parsed.scheme not in ("http", "https"):
+            return f"不允许的 URL scheme '{parsed.scheme}'，仅支持 http/https"
         data = body.encode("utf-8") if body else None
         req = urllib.request.Request(url, data=data, method=method.upper())
         with urllib.request.urlopen(req, timeout=20) as r:
