@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import subprocess
 import urllib.error
 import urllib.parse
@@ -43,12 +44,18 @@ def shell(command: str, cwd: str = None, timeout: int = 30) -> str:
     if any(d in command for d in _DANGEROUS):
         return "⚠️ 出于安全考虑，疑似危险命令已被阻止执行：" + command
     try:
-        proc = subprocess.run(command, shell=True, cwd=cwd or os.getcwd(),
+        # 使用 shlex.split() + shell=False 防止命令注入
+        args = shlex.split(command)
+        if not args:
+            return "⚠️ 命令为空"
+        proc = subprocess.run(args, shell=False, cwd=cwd or os.getcwd(),
                               capture_output=True, text=True, timeout=timeout)
         out = (proc.stdout or "") + (proc.stderr or "")
         return out[:8000] or "(无输出)"
     except subprocess.TimeoutExpired:
         return f"⚠️ 命令执行超时（>{timeout}s）"
+    except ValueError as e:
+        return f"⚠️ 命令解析错误：{e}"
     except Exception as e:  # noqa: BLE001
         return f"执行出错：{e}"
 
