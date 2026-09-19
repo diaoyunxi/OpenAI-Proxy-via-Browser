@@ -44,6 +44,7 @@ def shell(command: str, cwd: str = None, timeout: int = 30) -> str:
         return "⚠️ 出于安全考虑，疑似危险命令已被阻止执行：" + command
     try:
         proc = subprocess.run(command, shell=True, cwd=cwd or os.getcwd(),
+                              check=False,
                               capture_output=True, text=True, timeout=timeout)
         out = (proc.stdout or "") + (proc.stderr or "")
         return out[:8000] or "(无输出)"
