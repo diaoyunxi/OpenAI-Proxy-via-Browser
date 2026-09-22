@@ -1,6 +1,6 @@
 """内置工具实现：shell、文件读写、目录列举、HTTP 请求等。
 
-所有工具执行都做了基本安全防护：超时、异常捕获、路径/长度限制、危险命令提示性拦截。
+所有工具执行都做了基本安全防护：超时、异常捕获、路径/长度限制、命令白名单。
 
 安全提示：工具执行具有系统副作用（可读写文件、执行命令、发起网络请求）。
 请在可信环境下使用，并避免把不可信的外部输入直接作为命令/路径执行。
@@ -9,25 +9,30 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import subprocess
 import urllib.error
 import urllib.parse
 import urllib.request
 from typing import Any, Callable, Dict, List
 
-# 危险命令关键词（仅做提示性拦截，并非绝对安全保证）
+# 允许执行的命令白名单（首个 token 匹配）
+_ALLOWED_CMDS = {
+    "ls", "cat", "echo", "pwd", "whoami", "hostname", "date", "uname",
+    "head", "tail", "wc", "sort", "uniq", "cut", "tr", "diff", "find",
+    "grep", "egrep", "which", "whereis", "file", "stat", "du",
+    "df", "free", "ps", "env", "printenv", "id", "groups",
+    "python", "python3", "pip", "pip3", "node", "npm", "git",
+    "curl", "wget", "ping", "nslookup", "dig", "ifconfig", "ip",
+    "mkdir", "touch", "cp", "mv", "ln", "tar", "zip",
+    "unzip", "gzip", "gunzip", "sed", "awk", "xargs", "basename",
+    "dirname", "realpath", "readlink", "seq", "cal", "uptime",
+    "netstat", "ss", "lscpu", "lsblk", "tree",
+}
+
+# 危险命令关键词（双重保险）
 _DANGEROUS = ("rm -rf", "rm -r ", "mkfs", "dd if=", ":(){", "> /dev/sd",
-              "shutdown", "reboot", "chmod -R", "chown -R")
-
-
-def _tool(name: str, description: str, parameters: Dict[str, Any]):
-    """工具装饰器：把元数据挂到函数上，便于统一注册与说明生成。"""
-    def deco(func: Callable) -> Callable:
-        func._tool_name = name
-        func._tool_description = description
-        func._tool_parameters = parameters
-        return func
-    return deco
+              "shutdown", "reboot", "chmod -R", "chown -R", "sudo ", "su ")
 
 
 @_tool("shell", "在本地执行一条 shell 命令，返回标准输出与标准错误。", {
@@ -42,13 +47,25 @@ def _tool(name: str, description: str, parameters: Dict[str, Any]):
 def shell(command: str, cwd: str = None, timeout: int = 30) -> str:
     if any(d in command for d in _DANGEROUS):
         return "⚠️ 出于安全考虑，疑似危险命令已被阻止执行：" + command
+    # 解析命令并校验白名单
     try:
-        proc = subprocess.run(command, shell=True, cwd=cwd or os.getcwd(),
+        args = shlex.split(command)
+    except ValueError as e:
+        return f"⚠️ 命令解析失败：{e}"
+    if not args:
+        return "⚠️ 命令为空"
+    base_cmd = os.path.basename(args[0])
+    if base_cmd not in _ALLOWED_CMDS:
+        return f"⚠️ 命令 '{base_cmd}' 不在允许的白名单中，已阻止执行"
+    try:
+        proc = subprocess.run(args, shell=False, cwd=cwd or os.getcwd(),
                               capture_output=True, text=True, timeout=timeout)
         out = (proc.stdout or "") + (proc.stderr or "")
         return out[:8000] or "(无输出)"
     except subprocess.TimeoutExpired:
         return f"⚠️ 命令执行超时（>{timeout}s）"
+    except FileNotFoundError:
+        return f"⚠️ 命令未找到：{args[0]}"
     except Exception as e:  # noqa: BLE001
         return f"执行出错：{e}"
 
