@@ -19,6 +19,15 @@ from typing import Any, Callable, Dict, List
 _DANGEROUS = ("rm -rf", "rm -r ", "mkfs", "dd if=", ":(){", "> /dev/sd",
               "shutdown", "reboot", "chmod -R", "chown -R")
 
+def _normalize_command(cmd: str) -> str:
+    """去除多余空格、引号包裹等常见绕过手段，用于安全检测"""
+    import re as _re
+    # 去除多余的空白字符
+    normalized = " ".join(cmd.split())
+    # 去除引号包裹 (e.g., r""m → rm)
+    normalized = _re.sub(r'["']', '', normalized)
+    return normalized.lower()
+
 
 def _tool(name: str, description: str, parameters: Dict[str, Any]):
     """工具装饰器：把元数据挂到函数上，便于统一注册与说明生成。"""
@@ -40,7 +49,8 @@ def _tool(name: str, description: str, parameters: Dict[str, Any]):
     "required": ["command"]
 })
 def shell(command: str, cwd: str = None, timeout: int = 30) -> str:
-    if any(d in command for d in _DANGEROUS):
+    normalized = _normalize_command(command)
+    if any(d in normalized for d in _DANGEROUS):
         return "⚠️ 出于安全考虑，疑似危险命令已被阻止执行：" + command
     try:
         proc = subprocess.run(command, shell=True, cwd=cwd or os.getcwd(),
