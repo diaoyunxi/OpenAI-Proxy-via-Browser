@@ -14,7 +14,8 @@ import json
 import socket
 import urllib.error
 import urllib.request
-from typing import Any, Dict, Iterator, List, Optional
+from typing import Any, Optional
+from collections.abc import Iterator
 
 from .sse import iter_sse_events
 
@@ -38,8 +39,8 @@ class OAPClient:
         self.default_model = default_model
 
     # ---- 底层请求 ----
-    def _post(self, path: str, payload: Dict[str, Any],
-              extra_headers: Optional[Dict[str, str]] = None, stream: bool = False):
+    def _post(self, path: str, payload: dict[str, Any],
+              extra_headers: Optional[dict[str, str]] = None, stream: bool = False):
         url = self.base_url + path
         data = json.dumps(payload).encode("utf-8")
         headers = {
@@ -64,7 +65,7 @@ class OAPClient:
             ) from e
 
     # ---- 高层接口 ----
-    def health(self) -> Dict[str, Any]:
+    def health(self) -> dict[str, Any]:
         """查询网关健康状态。"""
         req = urllib.request.Request(self.base_url + "/health", method="GET")
         try:
@@ -73,7 +74,7 @@ class OAPClient:
         except Exception as e:  # noqa: BLE001 - 统一转换为 OAPError
             raise OAPError(f"健康检查失败: {e}") from e
 
-    def models(self) -> Dict[str, Any]:
+    def models(self) -> dict[str, Any]:
         """获取模型列表。"""
         req = urllib.request.Request(self.base_url + "/v1/models", method="GET")
         try:
@@ -82,20 +83,20 @@ class OAPClient:
         except Exception as e:  # noqa: BLE001
             raise OAPError(f"获取模型列表失败: {e}") from e
 
-    def chat(self, messages: List[Dict[str, str]], *,
+    def chat(self, messages: list[dict[str, str]], *,
              model: Optional[str] = None, stream: bool = False,
              timeout: Optional[int] = None, host: Optional[str] = None,
-             extra_headers: Optional[Dict[str, str]] = None) -> Any:
+             extra_headers: Optional[dict[str, str]] = None) -> Any:
         """发起一次对话补全。
 
         ``stream=False`` 时返回完整响应 dict；``stream=True`` 时返回事件 dict 的生成器。
         """
-        payload: Dict[str, Any] = {
+        payload: dict[str, Any] = {
             "model": model or self.default_model,
             "messages": messages,
             "stream": stream,
         }
-        headers: Dict[str, str] = dict(extra_headers or {})
+        headers: dict[str, str] = dict(extra_headers or {})
         eff_host = host or self.default_host
         if eff_host:
             headers["X-OAP-Host"] = eff_host
@@ -117,7 +118,7 @@ class OAPClient:
         except json.JSONDecodeError as e:
             raise OAPError(f"响应不是合法 JSON: {body[:200]}") from e
 
-    def cancel(self, request_id: str) -> Dict[str, Any]:
+    def cancel(self, request_id: str) -> dict[str, Any]:
         """取消一个正在进行的请求。"""
         url = f"{self.base_url}/v1/cancel/{request_id}"
         req = urllib.request.Request(url, method="POST",
