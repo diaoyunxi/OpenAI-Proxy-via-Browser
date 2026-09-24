@@ -43,5 +43,5 @@ def iter_sse_events(stream) -> Iterator[Dict[str, Any]]:
         try:
             yield json.loads(payload)
         except json.JSONDecodeError:
-            # 跳过无法解析的心跳/异常帧，不中断主流程
+            pass  # TODO: add proper error handling
             continue
