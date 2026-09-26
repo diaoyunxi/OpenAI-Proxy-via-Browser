@@ -10,13 +10,10 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator
-
-from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse
 
 from bridge import (
     BrowserBridge,
@@ -26,6 +23,9 @@ from bridge import (
     TaskTimeoutError,
 )
 from config import CONFIG
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse, StreamingResponse
 from openai_compat import (
     SSE_DONE,
     SSE_PING,
@@ -467,10 +467,8 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     await websocket.accept()
     session_id = await bridge.register(websocket)
     if session_id is None:
-        try:
+        with contextlib.suppress(RuntimeError):
             await websocket.close(code=4000, reason="handshake failed")
-        except RuntimeError:
-            pass
         return
 
     try:

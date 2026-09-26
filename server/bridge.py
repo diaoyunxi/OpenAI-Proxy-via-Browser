@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import time
 import uuid
@@ -19,10 +20,9 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Callable
 
+from config import GatewayConfig
 from fastapi import WebSocket, WebSocketDisconnect
 from fastapi.websockets import WebSocketState
-
-from config import GatewayConfig
 from protocol import (
     C2G_ACCEPTED,
     C2G_CHUNK,
@@ -198,10 +198,8 @@ class BrowserBridge:
         """停止后台任务并清理全部在途任务。"""
         if self._heartbeat_task and not self._heartbeat_task.done():
             self._heartbeat_task.cancel()
-            try:
+            with contextlib.suppress(asyncio.CancelledError):
                 await self._heartbeat_task
-            except asyncio.CancelledError:
-                pass
         self._heartbeat_task = None
         for request_id in list(self._tasks):
             self._tasks[request_id].fail(GW_ERR_NO_BROWSER, "网关正在关闭")
@@ -456,10 +454,8 @@ class BrowserBridge:
                 if not waiter.done():
                     waiter.cancel()
                 # 吸收等待协程的异常，避免 asyncio 报告“异常从未被取回”
-                try:
+                with contextlib.suppress(asyncio.CancelledError, Exception):
                     await waiter
-                except (asyncio.CancelledError, Exception):
-                    pass
             if handle is not None:
                 self._tasks.pop(handle.request_id, None)
             self._lock.release()
@@ -527,10 +523,8 @@ class BrowserBridge:
             if remaining <= 0:
                 handle.fail(GW_ERR_TIMEOUT, "浏览器响应超时")
                 break
-            try:
+            with contextlib.suppress(asyncio.TimeoutError):
                 await asyncio.wait_for(handle.event.wait(), timeout=min(remaining, _HEARTBEAT_CHECK_INTERVAL))
-            except asyncio.TimeoutError:
-                pass
             if disconnect_checker is not None and await self._is_disconnected(disconnect_checker):
                 raise ClientDisconnectedError()
 
