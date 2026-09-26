@@ -1,3 +1,11 @@
+from urllib.parse import urlparse
+
+def _validate_url_scheme(url):
+    p = urlparse(url)
+    if p.scheme not in ("http", "https"):
+        raise ValueError(f"不允许的协议: {p.scheme}")
+    return url
+
 """零依赖的 OpenAI-Proxy 网关客户端。
 
 使用标准库 ``urllib`` 直接调用网关的 OpenAI 兼容接口：
