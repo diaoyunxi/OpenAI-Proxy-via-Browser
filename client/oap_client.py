@@ -22,7 +22,7 @@ import json
 import socket
 import urllib.error
 import urllib.request
-from typing import Any, Dict, Iterator, List, Optional
+from typing import Any, Dict, List, Optional
 
 from .sse import iter_sse_events
 
