@@ -28,3 +28,6 @@ Thumbs.db
 /system_prompt.txt
 /agent_system_prompt.txt
 /tool_call_format.txt
+
+# Ruff linter cache
+.ruff_cache/
