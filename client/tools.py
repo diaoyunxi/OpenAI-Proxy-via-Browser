@@ -20,6 +20,15 @@ from typing import Any, Callable
 _DANGEROUS = ("rm -rf", "rm -r ", "mkfs", "dd if=", ":(){", "> /dev/sd",
               "shutdown", "reboot", "chmod -R", "chown -R")
 
+def _normalize_command(cmd: str) -> str:
+    """去除多余空格、引号包裹等常见绕过手段，用于安全检测"""
+    import re as _re
+    # 去除多余的空白字符
+    normalized = " ".join(cmd.split())
+    # 去除引号包裹 (e.g., r""m → rm)
+    normalized = _re.sub(r'["']', '', normalized)
+    return normalized.lower()
+
 # 工作目录白名单：限制 read_file / list_dir 只能访问此目录下的文件，
 # 防止路径遍历读取 /etc/passwd、~/.ssh/ 等敏感路径 (CWE-22)
 _WORKSPACE_DIR = os.environ.get("OAP_WORKSPACE_DIR", os.getcwd())
@@ -45,7 +54,8 @@ def _tool(name: str, description: str, parameters: dict[str, Any]):
     "required": ["command"]
 })
 def shell(command: str, cwd: str = None, timeout: int = 30) -> str:
-    if any(d in command for d in _DANGEROUS):
+    normalized = _normalize_command(command)
+    if any(d in normalized for d in _DANGEROUS):
         return "⚠️ 出于安全考虑，疑似危险命令已被阻止执行：" + command
     try:
         # 使用 shlex.split() + shell=False 防止命令注入
