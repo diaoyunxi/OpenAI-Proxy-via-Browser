@@ -88,12 +88,17 @@ def read_file(path: str, max_bytes: int = 200000) -> str:
     "required": ["path", "content"]
 })
 def write_file(path: str, content: str) -> str:
+    # 安全: 路径遍历防护 (CWE-22)
+    resolved = os.path.realpath(path)
+    cwd = os.path.realpath(os.getcwd())
+    if not resolved.startswith(cwd + os.sep) and resolved != cwd:
+        return "⚠️ 安全限制: 不允许写入当前工作目录之外的文件"
     try:
-        parent = os.path.dirname(os.path.abspath(path))
+        parent = os.path.dirname(resolved)
         os.makedirs(parent, exist_ok=True)
-        with open(path, "w", encoding="utf-8") as f:
+        with open(resolved, "w", encoding="utf-8") as f:
             f.write(content)
-        return f"已写入 {len(content)} 字符到 {path}"
+        return f"已写入 {len(content)} 字符到 {resolved}"
     except Exception as e:  # noqa: BLE001
         return f"写入失败：{e}"
 
