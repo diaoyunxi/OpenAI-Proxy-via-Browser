@@ -83,7 +83,7 @@ class OAPClient:
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as r:
                 return json.loads(r.read().decode("utf-8"))
-        except Exception as e:  # noqa: BLE001 - 统一转换为 OAPError
+        except Exception as e:
             raise OAPError(f"健康检查失败: {e}") from e
 
     def models(self) -> dict[str, Any]:
@@ -93,7 +93,7 @@ class OAPClient:
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as r:
                 return json.loads(r.read().decode("utf-8"))
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             raise OAPError(f"获取模型列表失败: {e}") from e
 
     def chat(self, messages: list[dict[str, str]], *,
@@ -140,5 +140,5 @@ class OAPClient:
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as r:
                 return json.loads(r.read().decode("utf-8"))
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             raise OAPError(f"取消请求失败: {e}") from e
