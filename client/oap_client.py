@@ -14,6 +14,10 @@ import json
 import socket
 import urllib.error
 import urllib.parse
+import urllib.request
+from typing import Any, Optional
+
+from .sse import iter_sse_events
 
 # 允许的 URL scheme 白名单，防止 file:// / ftp:// 等非预期访问
 _ALLOWED_SCHEMES = {"http", "https"}
@@ -24,10 +28,6 @@ def _validate_url_scheme(url: str) -> None:
     parsed = urllib.parse.urlparse(url)
     if parsed.scheme not in _ALLOWED_SCHEMES:
         raise OAPError(f"不允许的 URL scheme '{parsed.scheme}'，仅支持 http/https")
-import urllib.request
-from typing import Any, Iterator, Optional
-
-from .sse import iter_sse_events
 
 DEFAULT_BASE_URL = "http://127.0.0.1:8080"
 DEFAULT_MODEL = "browser-proxy"
