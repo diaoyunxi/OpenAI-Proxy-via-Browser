@@ -20,6 +20,10 @@ from typing import Any, Callable
 _DANGEROUS = ("rm -rf", "rm -r ", "mkfs", "dd if=", ":(){", "> /dev/sd",
               "shutdown", "reboot", "chmod -R", "chown -R")
 
+# 工作目录白名单：限制 read_file / list_dir 只能访问此目录下的文件，
+# 防止路径遍历读取 /etc/passwd、~/.ssh/ 等敏感路径 (CWE-22)
+_WORKSPACE_DIR = os.environ.get("OAP_WORKSPACE_DIR", os.getcwd())
+
 
 def _tool(name: str, description: str, parameters: dict[str, Any]):
     """工具装饰器：把元数据挂到函数上，便于统一注册与说明生成。"""
@@ -70,9 +74,14 @@ def shell(command: str, cwd: str = None, timeout: int = 30) -> str:
 })
 def read_file(path: str, max_bytes: int = 200000) -> str:
     try:
-        if not os.path.isfile(path):
+        # 路径遍历防护：只允许访问工作目录内的文件 (CWE-22)
+        abs_path = os.path.realpath(path)
+        workspace = os.path.realpath(_WORKSPACE_DIR)
+        if not abs_path.startswith(workspace + os.sep) and abs_path != workspace:
+            return f"⚠️ 安全限制：不允许访问工作目录以外的路径 ({path})"
+        if not os.path.isfile(abs_path):
             return f"文件不存在：{path}"
-        with open(path, "r", encoding="utf-8", errors="replace") as f:
+        with open(abs_path, "r", encoding="utf-8", errors="replace") as f:
             data = f.read(max_bytes)
         return data or "(空文件)"
     except Exception as e:  # noqa: BLE001
