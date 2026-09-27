@@ -13,14 +13,15 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from collections.abc import Callable
+from typing import Any
 
 from .oap_client import OAPClient, OAPError
 from .prompts import render_system
 from .tools import get_tool_spec
 
 # 工具调用返回结构：[(工具名, 参数字典), ...]
-ToolCall = Tuple[str, Dict[str, Any]]
+ToolCall = tuple[str, dict[str, Any]]
 
 _FENCE_RE = re.compile(r"```(?:json)?\s*([\s\S]*?)```", re.IGNORECASE)
 # 思考类标签（<think>/<thinking>/<reasoning> 及其闭合变体），解析前剥离以减少干扰
@@ -33,9 +34,9 @@ _TOOL_ANCHOR_RE = re.compile(r'\{\s*"tool"\s*:', re.IGNORECASE)
 class Agent:
     """基于网关的 agent 客户端，负责多轮对话与工具调用循环。"""
 
-    def __init__(self, client: OAPClient, tools: Dict[str, Callable],
+    def __init__(self, client: OAPClient, tools: dict[str, Callable],
                  system_prompt: str = "", model: str = "browser-proxy",
-                 host: Optional[str] = None, timeout: int = 180,
+                 host: str | None = None, timeout: int = 180,
                  max_iterations: int = 8):
         self.client = client
         self.tools = dict(tools)
@@ -46,7 +47,7 @@ class Agent:
         self.max_iterations = max_iterations
         self.tool_specs = [get_tool_spec(f) for f in self.tools.values()]
         # 对话历史（不含系统提示，系统提示在每次请求时动态生成）
-        self.history: List[Dict[str, str]] = []
+        self.history: list[dict[str, str]] = []
 
     # ---- 对外 API ----
     def run(self, user_input: str, verbose: bool = False) -> str:
@@ -105,7 +106,7 @@ class Agent:
 
             if verbose:
                 print(f"  [步骤{step}] 工具调用：{[c[0] for c in calls]}")
-            results: List[str] = []
+            results: list[str] = []
             for name, args in calls:
                 result = self._execute_tool(name, args)
                 results.append(f"[工具 {name} 执行结果]\n{result}")
@@ -123,12 +124,12 @@ class Agent:
         self.history.clear()
 
     # ---- 内部实现 ----
-    def _build_messages(self) -> List[Dict[str, str]]:
+    def _build_messages(self) -> list[dict[str, str]]:
         system = render_system(self.system_prompt, self.tool_specs)
         return [{"role": "system", "content": system}] + list(self.history)
 
     @staticmethod
-    def _extract_content(resp: Dict[str, Any]) -> str:
+    def _extract_content(resp: dict[str, Any]) -> str:
         """从网关响应中提取内容，优先使用 tool_calls（如有），否则返回 content。
 
         注意：当存在工具调用时，content 通常为 null，工具调用信息通过 tool_calls 字段传递。
@@ -143,7 +144,7 @@ class Agent:
             ) from e
 
     @staticmethod
-    def _extract_tool_calls(resp: Dict[str, Any]) -> Optional[List]:
+    def _extract_tool_calls(resp: dict[str, Any]) -> list | None:
         """从网关响应中提取工具调用列表。
 
         支持 OpenAI 格式的 tool_calls（{id, type, function}）和本项目自定义格式（{tool, args}）。
@@ -182,7 +183,7 @@ class Agent:
         except (KeyError, IndexError, TypeError):
             return None
 
-    def _execute_tool(self, name: str, args: Dict[str, Any]) -> str:
+    def _execute_tool(self, name: str, args: dict[str, Any]) -> str:
         func = self.tools.get(name)
         if func is None:
             return f"⚠️ 未知工具：{name}"
@@ -196,10 +197,10 @@ class Agent:
 
 # ------------------------- 工具调用解析（客户端侧） -------------------------
 
-def _extract_balanced(text: str) -> List[str]:
+def _extract_balanced(text: str) -> list[str]:
     """提取文本中所有括号配对的 JSON 块（最外层 {} 或 []）。"""
-    out: List[str] = []
-    stack: List[str] = []
+    out: list[str] = []
+    stack: list[str] = []
     start = -1
     for i, ch in enumerate(text):
         if ch in "{[":
@@ -219,13 +220,13 @@ def _extract_balanced(text: str) -> List[str]:
     return out
 
 
-def _extract_tool_objects(text: str) -> List[str]:
+def _extract_tool_objects(text: str) -> list[str]:
     """从文本中锚定 ``"tool"`` 键，精准提取工具调用 JSON 对象。
 
     应对模型复述系统提示词（含大量工具说明 JSON）时，全局括号配对会跨块、
     导致提取失败的问题：本函数只从 ``{"tool":`` 起始处做括号配对，忽略前置噪声。
     """
-    out: List[str] = []
+    out: list[str] = []
     for m in _TOOL_ANCHOR_RE.finditer(text):
         start = m.start()          # 即左花括号位置
         depth = 0
@@ -268,7 +269,7 @@ def _safe_json(s: str):
         return None
 
 
-def parse_tool_calls(text: str) -> List[ToolCall]:
+def parse_tool_calls(text: str) -> list[ToolCall]:
     """把模型输出解析为工具调用列表 [(name, args_dict), ...]。
 
     支持：裸 JSON 对象/数组、```json 围栏包裹、含思考前缀时取最后一个 JSON 块。
@@ -281,7 +282,7 @@ def parse_tool_calls(text: str) -> List[ToolCall]:
     # 解析前先剥离思考类标签，避免思考文字里的括号干扰括号配对
     cleaned = _THINK_TAG_RE.sub("", text).strip()
 
-    candidates: List[str] = []
+    candidates: list[str] = []
     for m in _FENCE_RE.finditer(cleaned):
         candidates.append(m.group(1).strip())
     # 锚定 "tool" 键精准提取（优先级高，能绕过复述的提示词噪声）
@@ -291,7 +292,7 @@ def parse_tool_calls(text: str) -> List[ToolCall]:
 
     # 去重并保持顺序
     seen: set = set()
-    uniq: List[str] = []
+    uniq: list[str] = []
     for c in candidates:
         if c and c not in seen:
             seen.add(c)
@@ -305,7 +306,7 @@ def parse_tool_calls(text: str) -> List[ToolCall]:
         items = parsed if isinstance(parsed, list) else [parsed]
         if not isinstance(items, list):
             continue
-        calls: List[ToolCall] = []
+        calls: list[ToolCall] = []
         ok = True
         for it in items:
             if not isinstance(it, dict) or "tool" not in it or not isinstance(it.get("tool"), str):
