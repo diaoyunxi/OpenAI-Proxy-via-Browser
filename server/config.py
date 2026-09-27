@@ -115,7 +115,7 @@ class GatewayConfig:
         :return: 配置实例
         """
         return cls(
-            host=_read_str("OAP_HOST", "0.0.0.0"),
+            host=_read_str("OAP_HOST", "127.0.0.1"),
             port=_read_int("OAP_PORT", 8080, 1, 65535),
             heartbeat_interval=_read_float("OAP_HEARTBEAT_SEC", 15.0, 5.0, 120.0),
             hello_timeout=_read_float("OAP_HELLO_TIMEOUT_SEC", 10.0, 3.0, 60.0),
