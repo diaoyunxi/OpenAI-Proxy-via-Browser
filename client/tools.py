@@ -12,6 +12,8 @@ import os
 import subprocess
 import urllib.error
 import urllib.parse
+import ipaddress
+import socket
 import urllib.request
 from typing import Any, Callable, Dict, List
 
@@ -107,6 +109,22 @@ def list_dir(path: str = ".", limit: int = 100) -> str:
         return f"列举失败：{e}"
 
 
+
+def _validate_url_safe(url: str) -> None:
+    """校验 URL 安全性，阻止 SSRF 攻击（访问内网地址）。"""
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError(f"不允许的 URL scheme: {parsed.scheme}，仅允许 http/https")
+    hostname = parsed.hostname
+    if not hostname:
+        raise ValueError("URL 缺少主机名")
+    try:
+        addr = ipaddress.ip_address(socket.getaddrinfo(hostname, None)[0][4][0])
+    except (socket.gaierror, OSError) as e:
+        raise ValueError(f"无法解析主机名: {hostname}") from e
+    if addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_reserved:
+        raise ValueError(f"禁止访问内网/回环地址: {hostname} ({addr})")
+
 @_tool("http_request", "发送一个 HTTP 请求并返回响应体（支持 GET/POST）。", {
     "type": "object",
     "properties": {
@@ -118,6 +136,7 @@ def list_dir(path: str = ".", limit: int = 100) -> str:
 })
 def http_request(url: str, method: str = "GET", body: str = None) -> str:
     try:
+        _validate_url_safe(url)
         data = body.encode("utf-8") if body else None
         req = urllib.request.Request(url, data=data, method=method.upper())
         with urllib.request.urlopen(req, timeout=20) as r:
