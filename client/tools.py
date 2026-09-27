@@ -96,6 +96,15 @@ def read_file(path: str, max_bytes: int = 200000) -> str:
         return f"读取失败：{e}"
 
 
+# 禁止写入的敏感路径前缀（CWE-73: External Control of File Name or Path）
+_SENSITIVE_PATH_PREFIXES = (
+    "/etc/", "/proc/", "/sys/", "/dev/",
+    "/boot/", "/root/.ssh/", "/root/.gnupg/",
+    os.path.expanduser("~/.ssh/"),
+    os.path.expanduser("~/.gnupg/"),
+)
+
+
 @_tool("write_file", "把内容写入指定文件（覆盖写入）。", {
     "type": "object",
     "properties": {
@@ -110,6 +119,9 @@ def write_file(path: str, content: str) -> str:
     cwd = os.path.realpath(os.getcwd())
     if not resolved.startswith(cwd + os.sep) and resolved != cwd:
         return "⚠️ 安全限制: 不允许写入当前工作目录之外的文件"
+    # 路径安全校验：拒绝写入系统敏感目录 (CWE-73)
+    if any(resolved.startswith(prefix) for prefix in _SENSITIVE_PATH_PREFIXES):
+        return f"⚠️ 出于安全考虑，禁止写入敏感路径：{path}"
     try:
         parent = os.path.dirname(resolved)
         os.makedirs(parent, exist_ok=True)
