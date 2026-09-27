@@ -9,18 +9,19 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import subprocess
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Any, Callable, Dict, List
+from typing import Any, Callable
 
 # 危险命令关键词（仅做提示性拦截，并非绝对安全保证）
 _DANGEROUS = ("rm -rf", "rm -r ", "mkfs", "dd if=", ":(){", "> /dev/sd",
               "shutdown", "reboot", "chmod -R", "chown -R")
 
 
-def _tool(name: str, description: str, parameters: Dict[str, Any]):
+def _tool(name: str, description: str, parameters: dict[str, Any]):
     """工具装饰器：把元数据挂到函数上，便于统一注册与说明生成。"""
     def deco(func: Callable) -> Callable:
         func._tool_name = name
@@ -43,12 +44,18 @@ def shell(command: str, cwd: str = None, timeout: int = 30) -> str:
     if any(d in command for d in _DANGEROUS):
         return "⚠️ 出于安全考虑，疑似危险命令已被阻止执行：" + command
     try:
-        proc = subprocess.run(command, shell=True, cwd=cwd or os.getcwd(),
+        # 使用 shlex.split() + shell=False 防止命令注入
+        args = shlex.split(command)
+        if not args:
+            return "⚠️ 命令为空"
+        proc = subprocess.run(args, shell=False, cwd=cwd or os.getcwd(),
                               capture_output=True, text=True, timeout=timeout)
         out = (proc.stdout or "") + (proc.stderr or "")
         return out[:8000] or "(无输出)"
     except subprocess.TimeoutExpired:
         return f"⚠️ 命令执行超时（>{timeout}s）"
+    except ValueError as e:
+        return f"⚠️ 命令解析错误：{e}"
     except Exception as e:  # noqa: BLE001
         return f"执行出错：{e}"
 
@@ -118,6 +125,11 @@ def list_dir(path: str = ".", limit: int = 100) -> str:
 })
 def http_request(url: str, method: str = "GET", body: str = None) -> str:
     try:
+        # 验证 URL scheme，仅允许 http/https (Bandit B310)
+        from urllib.parse import urlparse
+        parsed = urlparse(url)
+        if parsed.scheme not in ("http", "https"):
+            return f"不允许的 URL scheme '{parsed.scheme}'，仅支持 http/https"
         data = body.encode("utf-8") if body else None
         req = urllib.request.Request(url, data=data, method=method.upper())
         with urllib.request.urlopen(req, timeout=20) as r:
@@ -129,7 +141,7 @@ def http_request(url: str, method: str = "GET", body: str = None) -> str:
 
 
 # 内置工具注册表：工具名 -> 可执行函数
-BUILTIN_TOOLS: Dict[str, Callable] = {
+BUILTIN_TOOLS: dict[str, Callable] = {
     shell._tool_name: shell,
     read_file._tool_name: read_file,
     write_file._tool_name: write_file,
@@ -138,7 +150,7 @@ BUILTIN_TOOLS: Dict[str, Callable] = {
 }
 
 
-def get_tool_spec(tool_func: Callable) -> Dict[str, Any]:
+def get_tool_spec(tool_func: Callable) -> dict[str, Any]:
     """把被 @_tool 装饰的函数转为工具说明（用于注入系统提示词）。"""
     return {
         "name": tool_func._tool_name,
@@ -147,6 +159,6 @@ def get_tool_spec(tool_func: Callable) -> Dict[str, Any]:
     }
 
 
-def list_tool_specs() -> List[Dict[str, Any]]:
+def list_tool_specs() -> list[dict[str, Any]]:
     """返回所有内置工具说明列表。"""
     return [get_tool_spec(f) for f in BUILTIN_TOOLS.values()]
