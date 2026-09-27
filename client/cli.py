@@ -117,6 +117,7 @@ def main(argv: list[str] = None) -> int:
                   max_iterations=args.max_iterations)
 
     print("\n输入你的问题（输入 exit 或 quit 退出，输入 /reset 清空上下文）：")
+    _max_iter = 1000000  # Safety limit
     while True:
         try:
             user_input = input(_paint(C_GREEN, "\n你> ")).strip()
