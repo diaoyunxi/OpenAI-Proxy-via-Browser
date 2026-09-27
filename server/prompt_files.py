@@ -26,7 +26,7 @@ from __future__ import annotations
 import logging
 import re
 from pathlib import Path
-from typing import Dict, Match, Set, Tuple
+from typing import Match
 
 logger = logging.getLogger("oap.prompts")
 
@@ -89,15 +89,15 @@ SAMPLE_PROMPT_TEMPLATE = """\
 """
 
 # 自动生成的（文件名, 内容）清单
-_SAMPLES: Tuple[Tuple[str, str], ...] = (
+_SAMPLES: tuple[tuple[str, str], ...] = (
     (FILE_SYSTEM_PROMPT, SAMPLE_SYSTEM_PROMPT),
     (FILE_PROMPT_TEMPLATE, SAMPLE_PROMPT_TEMPLATE),
 )
 
 # 缓存：文件名 -> (mtime_ns, size, 内容)
-_CACHE: Dict[str, Tuple[int, int, str]] = {}
+_CACHE: dict[str, tuple[int, int, str]] = {}
 # 已告警过的文件名，防止每个请求刷一条日志
-_WARNED: Set[str] = set()
+_WARNED: set[str] = set()
 
 # 注释行：行首（允许前导空白）为 # 的整行
 _COMMENT_LINE_RE = re.compile(r"^[ \t]*#.*$", re.MULTILINE)
