@@ -227,7 +227,7 @@ class BrowserBridge:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # 防御：心跳异常不应导致服务中断
-                logger.exception("心跳循环异常：%s", exc)
+                logger.exception("心跳循环异常")
 
     # ------------------------------------------------------------------ 连接管理
 
