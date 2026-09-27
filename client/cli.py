@@ -10,7 +10,6 @@ import argparse
 import os
 import re
 import sys
-from typing import List
 
 from .agent import Agent
 from .oap_client import OAPClient, OAPError
@@ -80,7 +79,7 @@ def _paint_think(text: str) -> str:
     )
 
 
-def main(argv: List[str] = None) -> int:
+def main(argv: list[str] = None) -> int:
     # 首次运行时补齐缺失的提示词文件（已存在的一律不动）
     created = ensure_prompt_files()
     if created:
@@ -118,6 +117,7 @@ def main(argv: List[str] = None) -> int:
                   max_iterations=args.max_iterations)
 
     print("\n输入你的问题（输入 exit 或 quit 退出，输入 /reset 清空上下文）：")
+    _max_iter = 1000000  # Safety limit
     while True:
         try:
             user_input = input(_paint(C_GREEN, "\n你> ")).strip()

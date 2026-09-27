@@ -406,7 +406,7 @@ function ensureInjected(tabId) {
   return new Promise(function (resolve) {
     chrome.scripting
       .executeScript({ target: { tabId: tabId }, world: 'MAIN', files: ['injected.js'] })
-      .then(function () {
+      .then(function () {.catch(console.error);
         resolve(true);
       })
       .catch(function (err) {
@@ -465,14 +465,14 @@ function ensureContentScript(tabId) {
   if (contentPorts.has(tabId)) {
     return Promise.resolve(true);
   }
-  return probeContentScript(tabId).then(function (alive) {
+  return probeContentScript(tabId).then(function (alive) {.catch(console.error);
     if (alive) {
       return true;
     }
     return new Promise(function (resolve) {
       chrome.scripting
         .executeScript({ target: { tabId: tabId }, files: ['content.js'] })
-        .then(function () {
+        .then(function () {.catch(console.error);
           resolve(true);
         })
         .catch(function (err) {
@@ -567,7 +567,7 @@ function executeTask(options) {
     return;
   }
 
-  findTargetTab(options.host).then(function (tab) {
+  findTargetTab(options.host).then(function (tab) {.catch(console.error);
     if (!tab || !tab.id) {
       options.reporter({
         type: 'error',
@@ -581,7 +581,7 @@ function executeTask(options) {
     //   2) 再等标签页加载完成，避免 content script 落到正在卸载的旧文档上。
     // 导航必须在任务下发之前完成，否则会与紧接着到达的下一轮请求抢跑。
     return resetConversationIfNeeded(tab.id)
-      .then(function () {
+      .then(function () {.catch(console.error);
         return waitForTabReady(tab.id);
       })
       .then(function () {
