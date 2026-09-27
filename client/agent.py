@@ -13,7 +13,8 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any, Callable, Optional
+from collections.abc import Callable
+from typing import Any
 
 from .oap_client import OAPClient, OAPError
 from .prompts import render_system
@@ -35,7 +36,7 @@ class Agent:
 
     def __init__(self, client: OAPClient, tools: dict[str, Callable],
                  system_prompt: str = "", model: str = "browser-proxy",
-                 host: Optional[str] = None, timeout: int = 180,
+                 host: str | None = None, timeout: int = 180,
                  max_iterations: int = 8):
         self.client = client
         self.tools = dict(tools)
@@ -143,7 +144,7 @@ class Agent:
             ) from e
 
     @staticmethod
-    def _extract_tool_calls(resp: dict[str, Any]) -> Optional[List]:
+    def _extract_tool_calls(resp: dict[str, Any]) -> list | None:
         """从网关响应中提取工具调用列表。
 
         支持 OpenAI 格式的 tool_calls（{id, type, function}）和本项目自定义格式（{tool, args}）。
