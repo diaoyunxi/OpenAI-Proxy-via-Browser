@@ -22,11 +22,10 @@ _DANGEROUS = ("rm -rf", "rm -r ", "mkfs", "dd if=", ":(){", "> /dev/sd",
 
 def _normalize_command(cmd: str) -> str:
     """去除多余空格、引号包裹等常见绕过手段，用于安全检测"""
-    import re as _re
     # 去除多余的空白字符
     normalized = " ".join(cmd.split())
     # 去除引号包裹 (e.g., r""m → rm)
-    normalized = _re.sub(r'["']', '', normalized)
+    normalized = normalized.replace('"', '').replace("'", "")
     return normalized.lower()
 
 # 工作目录白名单：限制 read_file / list_dir 只能访问此目录下的文件，
