@@ -142,7 +142,15 @@ def write_file(path: str, content: str) -> str:
 })
 def list_dir(path: str = ".", limit: int = 100) -> str:
     try:
-        entries = sorted(os.listdir(path or "."))
+        # 路径遍历防护：与 read_file 一致，只允许列举工作目录内的目录 (CWE-22)。
+        # PR #15 标题声明同时保护 read_file 与 list_dir，但实际只对 read_file
+        # 加了工作目录白名单；list_dir 此前仍可直接 os.listdir("/etc")、
+        # os.listdir("~/.ssh") 等敏感目录。
+        abs_path = os.path.realpath(path or ".")
+        workspace = os.path.realpath(_WORKSPACE_DIR)
+        if not abs_path.startswith(workspace + os.sep) and abs_path != workspace:
+            return f"⚠️ 安全限制：不允许列举工作目录以外的路径 ({path})"
+        entries = sorted(os.listdir(abs_path))
         return "\n".join(entries[:limit]) or "(空目录)"
     except Exception as e:  # noqa: BLE001
         return f"列举失败：{e}"
