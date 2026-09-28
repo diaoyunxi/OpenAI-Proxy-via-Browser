@@ -30,6 +30,25 @@ def _tool(name: str, description: str, parameters: Dict[str, Any]):
     return deco
 
 
+# 命令长度上限
+_MAX_CMD_LEN = 512
+
+# 危险命令正则模式（替代简单子串匹配，防止绕过）
+import re as _re
+_DANGEROUS_PATTERNS = [
+    _re.compile(r'\brm\s+(-[a-zA-Z]*r[a-zA-Z]*\s+/|\s+-[a-zA-Z]*r\b)'),  # rm -rf
+    _re.compile(r'\bmkfs\b'), _re.compile(r'\bdd\s+if='),
+    _re.compile(r':\(\)\s*\{'),  # fork bomb
+    _re.compile(r'>\s*/dev/sd'),  # 写磁盘设备
+    _re.compile(r'\bshutdown\b|\breboot\b|\bhalt\b|\bpoweroff\b'),
+    _re.compile(r'chmod\s+-R\s+777\s+/'),
+    _re.compile(r'\|\s*(ba)?sh\b'),  # 管道到 shell
+    _re.compile(r'\b(curl|wget)\b.*\|\s*(ba)?sh'),  # 远程代码执行
+    _re.compile(r'\bsudo\s+(su\b|-i\b|bash\b|sh\b)'),  # 提权
+    _re.compile(r'\beval\b'),  # 动态执行
+]
+
+
 @_tool("shell", "在本地执行一条 shell 命令，返回标准输出与标准错误。", {
     "type": "object",
     "properties": {
@@ -40,8 +59,13 @@ def _tool(name: str, description: str, parameters: Dict[str, Any]):
     "required": ["command"]
 })
 def shell(command: str, cwd: str = None, timeout: int = 30) -> str:
-    if any(d in command for d in _DANGEROUS):
-        return "⚠️ 出于安全考虑，疑似危险命令已被阻止执行：" + command
+    # 长度限制
+    if len(command) > _MAX_CMD_LEN:
+        return f"⚠️ 命令过长（{len(command)} 字符），最大允许 {_MAX_CMD_LEN} 字符"
+    # 正则模式匹配危险命令（替代简单子串检查，防止变体绕过）
+    for pat in _DANGEROUS_PATTERNS:
+        if pat.search(command):
+            return "⚠️ 出于安全考虑，命令匹配危险模式，已阻止执行"
     try:
         proc = subprocess.run(command, shell=True, cwd=cwd or os.getcwd(),
                               capture_output=True, text=True, timeout=timeout)
