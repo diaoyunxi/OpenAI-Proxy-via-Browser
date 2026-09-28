@@ -234,7 +234,7 @@ OpenAI-Proxy-via-Browser/
 ├── client/                 # agents 客户端（零依赖 Python 库 + CLI）
 │   ├── oap_client.py       # 网关 HTTP 客户端（urllib，零依赖）
 │   ├── sse.py              # SSE 流式解析
-│   ├── tools.py            # 内置工具（shell/read_file/write_file/list_dir/http_request）
+│   ├── tools.py            # 内置工具（shell/read_file/write_file/list_dir/http_request，共 5 个工具函数）
 │   ├── prompts.py          # 工具说明渲染进系统提示词
 │   ├── prompt_files.py     # 提示词 txt 热加载（零依赖）
 │   ├── agent.py            # 多轮对话 + 工具调用循环
