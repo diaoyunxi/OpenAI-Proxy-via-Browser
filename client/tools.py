@@ -16,8 +16,17 @@ import urllib.request
 from typing import Any, Callable
 
 # 危险命令关键词（仅做提示性拦截，并非绝对安全保证）
-_DANGEROUS = ("rm -rf", "rm -r ", "mkfs", "dd if=", ":(){", "> /dev/sd",
-              "shutdown", "reboot", "chmod -R", "chown -R")
+# 危险命令关键词（仅做提示性拦截，并非绝对安全保证）
+# 注意：黑名单机制本质不完备，生产环境建议改用白名单或沙箱
+_DANGEROUS = (
+    "rm -rf", "rm -r ", "mkfs", "dd if=", ":(){", "> /dev/sd",
+    "shutdown", "reboot", "chmod -R", "chown -R",
+    "find / -delete", "find / -exec",
+    "python -c", "python3 -c", "perl -e", "ruby -e",
+    "curl | sh", "curl | bash", "wget | sh", "wget | bash",
+    "nc -", "ncat -", "socat",
+    "> /etc/", "> /boot/",
+)
 
 def _normalize_command(cmd: str) -> str:
     """去除多余空格、引号包裹等常见绕过手段，用于安全检测"""
