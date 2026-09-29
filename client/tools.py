@@ -63,9 +63,19 @@ def shell(command: str, cwd: str = None, timeout: int = 30) -> str:
 })
 def read_file(path: str, max_bytes: int = 200000) -> str:
     try:
-        if not os.path.isfile(path):
+        # 安全校验：将路径解析为绝对路径并限制在工作目录内，防止路径遍历 (CWE-22)
+        abs_path = os.path.abspath(path)
+        work_dir = os.getcwd()
+        if not abs_path.startswith(work_dir + os.sep) and abs_path != work_dir:
+            return f"⚠️ 安全限制：只允许读取工作目录 ({work_dir}) 内的文件"
+        # 禁止读取敏感系统路径
+        _BLOCKED_PREFIXES = ("/proc/", "/sys/", "/dev/", "/etc/shadow", "/etc/sudoers")
+        for prefix in _BLOCKED_PREFIXES:
+            if abs_path.startswith(prefix) or abs_path == prefix.rstrip("/"):
+                return f"⚠️ 安全限制：不允许读取系统敏感路径"
+        if not os.path.isfile(abs_path):
             return f"文件不存在：{path}"
-        with open(path, "r", encoding="utf-8", errors="replace") as f:
+        with open(abs_path, "r", encoding="utf-8", errors="replace") as f:
             data = f.read(max_bytes)
         return data or "(空文件)"
     except Exception as e:  # noqa: BLE001
@@ -82,9 +92,14 @@ def read_file(path: str, max_bytes: int = 200000) -> str:
 })
 def write_file(path: str, content: str) -> str:
     try:
-        parent = os.path.dirname(os.path.abspath(path))
+        # 安全校验：限制写入路径在工作目录内，防止写入系统关键文件 (CWE-73)
+        abs_path = os.path.abspath(path)
+        work_dir = os.getcwd()
+        if not abs_path.startswith(work_dir + os.sep) and abs_path != work_dir:
+            return f"⚠️ 安全限制：只允许写入工作目录 ({work_dir}) 内的文件"
+        parent = os.path.dirname(abs_path)
         os.makedirs(parent, exist_ok=True)
-        with open(path, "w", encoding="utf-8") as f:
+        with open(abs_path, "w", encoding="utf-8") as f:
             f.write(content)
         return f"已写入 {len(content)} 字符到 {path}"
     except Exception as e:  # noqa: BLE001
@@ -101,7 +116,12 @@ def write_file(path: str, content: str) -> str:
 })
 def list_dir(path: str = ".", limit: int = 100) -> str:
     try:
-        entries = sorted(os.listdir(path or "."))
+        # 安全校验：限制列举路径在工作目录内，防止遍历系统目录 (CWE-548)
+        abs_path = os.path.abspath(path or ".")
+        work_dir = os.getcwd()
+        if not abs_path.startswith(work_dir + os.sep) and abs_path != work_dir:
+            return f"⚠️ 安全限制：只允许列举工作目录 ({work_dir}) 内的目录"
+        entries = sorted(os.listdir(abs_path))
         return "\n".join(entries[:limit]) or "(空目录)"
     except Exception as e:  # noqa: BLE001
         return f"列举失败：{e}"
