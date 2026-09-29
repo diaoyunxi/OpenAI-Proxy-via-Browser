@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import json
+import os
 import socket
 import urllib.error
 import urllib.request
@@ -18,7 +19,7 @@ from typing import Any, Dict, Iterator, List, Optional
 
 from .sse import iter_sse_events
 
-DEFAULT_BASE_URL = "http://127.0.0.1:8080"
+DEFAULT_BASE_URL = os.environ.get("OAP_BASE_URL", "http://127.0.0.1:8080")
 DEFAULT_MODEL = "browser-proxy"
 DEFAULT_TIMEOUT = 180
 
