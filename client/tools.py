@@ -13,6 +13,8 @@ import subprocess
 import urllib.error
 import urllib.parse
 import urllib.request
+import ipaddress
+from urllib.parse import urlparse
 from typing import Any, Callable, Dict, List
 
 # 危险命令关键词（仅做提示性拦截，并非绝对安全保证）
@@ -116,12 +118,49 @@ def list_dir(path: str = ".", limit: int = 100) -> str:
     },
     "required": ["url"]
 })
+def _validate_url_for_ssrf(url: str) -> None:
+    """校验 URL 防止 SSRF 攻击 (CWE-918)。
+
+    拒绝：非 http/https 协议、私有 IP 地址、回环地址、链路本地地址。
+    """
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError(f"仅允许 http/https 协议，拒绝: {parsed.scheme or '(空)'}")
+
+    hostname = parsed.hostname
+    if not hostname:
+        raise ValueError("URL 中缺少主机名")
+
+    try:
+        addr = ipaddress.ip_address(hostname)
+        if addr.is_private or addr.is_loopback or addr.is_reserved or addr.is_link_local:
+            raise ValueError(f"拒绝访问私有/内部 IP 地址: {hostname}")
+    except ValueError as e:
+        if "拒绝访问" in str(e):
+            raise
+        import socket
+        try:
+            infos = socket.getaddrinfo(hostname, None)
+            for info in infos:
+                ip_str = info[4][0]
+                addr = ipaddress.ip_address(ip_str)
+                if addr.is_private or addr.is_loopback or addr.is_reserved or addr.is_link_local:
+                    raise ValueError(
+                        f"域名 {hostname} 解析到私有/内部 IP {ip_str}，拒绝访问"
+                    )
+        except socket.gaierror:
+            raise ValueError(f"无法解析主机名: {hostname}")
+
+
 def http_request(url: str, method: str = "GET", body: str = None) -> str:
     try:
+        _validate_url_for_ssrf(url)
         data = body.encode("utf-8") if body else None
         req = urllib.request.Request(url, data=data, method=method.upper())
         with urllib.request.urlopen(req, timeout=20) as r:
             return r.read(8000).decode("utf-8", "replace")
+    except ValueError as e:
+        return f"⚠️ URL 安全校验失败：{e}"
     except urllib.error.HTTPError as e:
         return f"HTTP 错误 {e.code}: {e.reason}"
     except Exception as e:  # noqa: BLE001
