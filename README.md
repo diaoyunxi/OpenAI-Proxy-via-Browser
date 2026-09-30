@@ -240,7 +240,10 @@ OpenAI-Proxy-via-Browser/
 │   ├── agent.py            # 多轮对话 + 工具调用循环
 │   ├── cli.py              # 命令行交互 demo
 │   └── README.md           # 客户端使用文档
-├── tools/make_icons.py      # 用标准库生成扩展图标
+├── tools/
+│   ├── make_icons.py        # 用标准库生成扩展图标
+│   └── find-selectors.js    # DOM 选择器辅助定位工具（浏览器控制台使用）
+│   以下 4 个 .txt 文件为运行时自动生成，已加入 .gitignore，首次启动后由代码创建：
 ├── prompt_template.txt      # 服务端消息包装模板（自动生成·不入库·热加载）
 ├── system_prompt.txt        # 服务端默认系统提示词（自动生成·不入库·热加载）
 ├── agent_system_prompt.txt  # 客户端 Agent 默认系统提示词（自动生成·不入库·热加载）
