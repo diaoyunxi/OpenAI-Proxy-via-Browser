@@ -10,7 +10,8 @@ import json
 import time
 import unicodedata
 import uuid
-from typing import Any, Iterator
+from typing import Any
+from collections.abc import Iterator
 
 SSE_DONE = "data: [DONE]\n\n"
 SSE_PING = ": ping\n\n"

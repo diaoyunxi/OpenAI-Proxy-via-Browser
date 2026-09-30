@@ -13,7 +13,8 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
+from collections.abc import Callable
 
 from .oap_client import OAPClient, OAPError
 from .prompts import render_system

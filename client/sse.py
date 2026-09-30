@@ -6,7 +6,8 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, Iterator
+from typing import Any, Dict
+from collections.abc import Iterator
 
 SSE_DONE = "[DONE]"
 

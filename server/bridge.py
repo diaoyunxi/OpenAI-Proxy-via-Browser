@@ -17,7 +17,8 @@ import time
 import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from typing import Any, AsyncIterator, Callable
+from typing import Any
+from collections.abc import AsyncIterator, Callable
 
 from fastapi import WebSocket, WebSocketDisconnect
 from fastapi.websockets import WebSocketState

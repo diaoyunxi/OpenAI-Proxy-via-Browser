@@ -7,13 +7,13 @@
 """
 from __future__ import annotations
 
-import json
 import os
 import subprocess
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Any, Callable, Dict, List
+from typing import Any, Dict, List
+from collections.abc import Callable
 
 # 危险命令关键词（仅做提示性拦截，并非绝对安全保证）
 _DANGEROUS = ("rm -rf", "rm -r ", "mkfs", "dd if=", ":(){", "> /dev/sd",

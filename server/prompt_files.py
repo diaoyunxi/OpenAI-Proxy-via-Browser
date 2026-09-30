@@ -26,7 +26,8 @@ from __future__ import annotations
 import logging
 import re
 from pathlib import Path
-from typing import Dict, Match, Set, Tuple
+from typing import Dict, Set, Tuple
+from re import Match
 
 logger = logging.getLogger("oap.prompts")
 
