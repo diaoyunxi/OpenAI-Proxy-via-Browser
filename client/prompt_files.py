@@ -16,7 +16,7 @@ from __future__ import annotations
 import importlib.util
 import logging
 from pathlib import Path
-from typing import Dict, List, Tuple
+
 
 logger = logging.getLogger("oap.client.prompts")
 
@@ -39,13 +39,13 @@ DEFAULT_TOOL_FORMAT = """\
 """
 
 # 首次运行时写入文件的示例内容（与内置默认值一致）
-_SAMPLES: Tuple[Tuple[str, str], ...] = (
+_SAMPLES: tuple[tuple[str, str], ...] = (
     (FILE_AGENT_SYSTEM, DEFAULT_AGENT_SYSTEM + "\n"),
     (FILE_TOOL_FORMAT, DEFAULT_TOOL_FORMAT),
 )
 
 # 缓存：文件名 -> (mtime_ns, size, 内容)
-_CACHE: Dict[str, Tuple[int, int, str]] = {}
+_CACHE: dict[str, tuple[int, int, str]] = {}
 # 已告警过的文件名，防止重复刷日志
 _WARNED = set()
 
@@ -131,7 +131,7 @@ def load_tool_call_format() -> str:
     return text
 
 
-def _ensure_server_prompt_files() -> List[Path]:
+def _ensure_server_prompt_files() -> list[Path]:
     """尝试补齐服务端（`server/prompt_files.py`）所需的提示词文件。
 
     按文件路径动态加载，避免客户端在运行时依赖服务端的包结构；
@@ -154,7 +154,7 @@ def _ensure_server_prompt_files() -> List[Path]:
         return []
 
 
-def ensure_prompt_files(include_server: bool = True) -> List[Path]:
+def ensure_prompt_files(include_server: bool = True) -> list[Path]:
     """确保提示词文件存在，缺失时按内置示例内容自动创建。
 
     仅补齐缺失的文件，已存在的文件一律不动，避免覆盖用户的自定义内容。
@@ -162,7 +162,7 @@ def ensure_prompt_files(include_server: bool = True) -> List[Path]:
     :param include_server: 是否一并补齐服务端（`server/`）所需的提示词文件
     :return: 本次新建的文件路径列表（原本就存在的不包含在内）
     """
-    created: List[Path] = []
+    created: list[Path] = []
     for filename, content in _SAMPLES:
         path = prompt_file_path(filename)
         if path.exists():
