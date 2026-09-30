@@ -62,7 +62,8 @@ class OAPClient:
             headers.update(extra_headers)
         req = urllib.request.Request(url, data=data, headers=headers, method="POST")
         try:
-            return urllib.request.urlopen(req, timeout=self.timeout)
+            resp = urllib.request.urlopen(req, timeout=self.timeout)
+            return resp
         except urllib.error.HTTPError as e:
             body = e.read().decode("utf-8", "replace")
             raise OAPError(f"网关返回 HTTP {e.code}: {body[:300]}") from e
