@@ -55,6 +55,8 @@ def shell(command: str, cwd: str = None, timeout: int = 30) -> str:
     normalized = _normalize_command(command)
     if any(d in normalized for d in _DANGEROUS):
         return "⚠️ 出于安全考虑，疑似危险命令已被阻止执行：" + command
+    # 输出大小上限，防止大量输出撑爆 LLM 上下文 (CWE-770)
+    _MAX_OUTPUT = 50_000
     try:
         # 使用 shlex.split() + shell=False 防止命令注入
         args = shlex.split(command)
@@ -63,7 +65,9 @@ def shell(command: str, cwd: str = None, timeout: int = 30) -> str:
         proc = subprocess.run(args, shell=False, cwd=cwd or os.getcwd(),
                               capture_output=True, text=True, timeout=timeout)
         out = (proc.stdout or "") + (proc.stderr or "")
-        return out[:8000] or "(无输出)"
+        if len(out) > _MAX_OUTPUT:
+            out = out[:_MAX_OUTPUT] + f"\n... (输出已截断，原始大小 {len(out)} 字符)"
+        return out or "(无输出)"
     except subprocess.TimeoutExpired:
         return f"⚠️ 命令执行超时（>{timeout}s）"
     except ValueError as e:
