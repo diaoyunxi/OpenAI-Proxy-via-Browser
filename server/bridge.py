@@ -458,8 +458,11 @@ class BrowserBridge:
                 # 吸收等待协程的异常，避免 asyncio 报告“异常从未被取回”
                 try:
                     await waiter
-                except (asyncio.CancelledError, Exception):
+                except asyncio.CancelledError:
                     pass
+                except Exception as e:
+                    # 记录非取消异常，避免吞没编程错误
+                    logger.debug("waiter 清理时捕获非取消异常: %s", e, exc_info=True)
             if handle is not None:
                 self._tasks.pop(handle.request_id, None)
             self._lock.release()
