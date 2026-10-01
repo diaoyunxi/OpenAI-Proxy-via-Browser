@@ -8,7 +8,9 @@
 from __future__ import annotations
 
 import os
+import ipaddress
 import shlex
+import socket
 import subprocess
 import urllib.error
 import urllib.parse
@@ -18,6 +20,23 @@ from typing import Any, Callable
 # 危险命令关键词（仅做提示性拦截，并非绝对安全保证）
 _DANGEROUS = ("rm -rf", "rm -r ", "mkfs", "dd if=", ":(){", "> /dev/sd",
               "shutdown", "reboot", "chmod -R", "chown -R")
+
+
+def _is_private_ip(hostname: str) -> bool:
+    """检查主机名是否解析为内网/私有 IP 地址，防止 SSRF 攻击。
+
+    包括：127.x、10.x、172.16-31.x、192.168.x、169.254.x、
+    ::1、fc00::/7（ULA）、fe80::/10（链路本地）、0.0.0.0 等。
+    """
+    try:
+        addrinfo = socket.getaddrinfo(hostname, None)
+    except socket.gaierror:
+        return True  # 无法解析的主机名，拒绝以防绕过
+    for family, _, _, _, sockaddr in addrinfo:
+        ip = ipaddress.ip_address(sockaddr[0])
+        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
+            return True
+    return False
 
 def _normalize_command(cmd: str) -> str:
     """去除多余空格、引号包裹等常见绕过手段，用于安全检测"""
@@ -164,6 +183,14 @@ def http_request(url: str, method: str = "GET", body: str = None) -> str:
         parsed = urlparse(url)
         if parsed.scheme not in ("http", "https"):
             return f"不允许的 URL scheme '{parsed.scheme}'，仅支持 http/https"
+
+        # SSRF 防护：校验主机名是否解析为内网 IP
+        hostname = parsed.hostname
+        if not hostname:
+            return "⚠️ URL 缺少主机名"
+        if _is_private_ip(hostname):
+            return f"⚠️ 出于安全考虑，禁止访问内网地址: {hostname}"
+
         data = body.encode("utf-8") if body else None
         req = urllib.request.Request(url, data=data, method=method.upper())
         with urllib.request.urlopen(req, timeout=20) as r:
