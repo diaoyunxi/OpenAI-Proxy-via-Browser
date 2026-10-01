@@ -126,6 +126,8 @@ class OAPClient:
                 "请确认目标浏览器扩展已就绪并正被正常调用，"
                 "或适当调大 --timeout 后重试。"
             ) from e
+        finally:
+            resp.close()
         try:
             return json.loads(body)
         except json.JSONDecodeError as e:
