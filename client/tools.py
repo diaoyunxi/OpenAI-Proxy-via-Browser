@@ -15,6 +15,10 @@ import urllib.parse
 import urllib.request
 from typing import Any, Callable, Dict, List
 
+# 工具输出上限，防止 LLM 上下文溢出 (CWE-770)
+MAX_TOOL_OUTPUT_CHARS = 50000
+
+
 # 危险命令关键词（仅做提示性拦截，并非绝对安全保证）
 _DANGEROUS = ("rm -rf", "rm -r ", "mkfs", "dd if=", ":(){", "> /dev/sd",
               "shutdown", "reboot", "chmod -R", "chown -R")
