@@ -322,7 +322,7 @@ async def chat_completions(request: Request) -> Any:
         return error_response(getattr(exc, "code", None), str(exc))
     except TaskFailedError as exc:
         return error_response(exc.code, exc.message)
-    except Exception as exc:  # 兜底：避免把原始异常抛给调用方
+    except Exception:  # 兜底：避免把原始异常抛给调用方
         logger.exception("处理请求时发生未预期异常")
         return error_response(None, "网关内部错误，请查看服务端日志")
 
@@ -444,7 +444,7 @@ async def stream_response(
         code = getattr(exc, "code", None)
         yield sse_error_frame(str(exc), error_type_for(code), code)
         yield SSE_DONE
-    except Exception as exc:  # 兜底：保证流一定以 [DONE] 收尾，避免客户端挂死
+    except Exception:  # 兜底：保证流一定以 [DONE] 收尾，避免客户端挂死
         logger.exception("流式响应异常")
         yield sse_error_frame("网关内部错误，请查看服务端日志")
         yield SSE_DONE
@@ -479,7 +479,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             await bridge.handle_message(session_id, raw)
     except WebSocketDisconnect:
         logger.info("扩展断开连接：%s", session_id)
-    except Exception as exc:
+    except Exception:
         logger.exception("WebSocket 处理异常（session=%s）", session_id)
     finally:
         await bridge.unregister(session_id)
