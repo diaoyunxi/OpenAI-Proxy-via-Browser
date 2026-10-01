@@ -11,8 +11,11 @@ import json
 import os
 import subprocess
 import urllib.error
+import ipaddress
 import urllib.parse
+import ipaddress
 import urllib.request
+import ipaddress
 from typing import Any, Callable, Dict, List
 
 # 危险命令关键词（仅做提示性拦截，并非绝对安全保证）
