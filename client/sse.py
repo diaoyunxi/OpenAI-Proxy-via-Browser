@@ -6,7 +6,10 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any, Iterator
+
+logger = logging.getLogger(__name__)
 
 SSE_DONE = "[DONE]"
 
@@ -42,6 +45,5 @@ def iter_sse_events(stream) -> Iterator[dict[str, Any]]:
             return
         try:
             yield json.loads(payload)
-        except json.JSONDecodeError:
-            pass  # TODO: add proper error handling
-            continue
+        except json.JSONDecodeError as e:
+            logger.debug("SSE payload JSON 解析失败，已跳过: %s (payload=%.120s)", e, payload)
