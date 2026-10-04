@@ -14,10 +14,6 @@ import logging
 from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator
 
-from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse
-
 from bridge import (
     BrowserBridge,
     BrowserUnavailableError,
@@ -26,6 +22,9 @@ from bridge import (
     TaskTimeoutError,
 )
 from config import CONFIG
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse, StreamingResponse
 from openai_compat import (
     SSE_DONE,
     SSE_PING,
