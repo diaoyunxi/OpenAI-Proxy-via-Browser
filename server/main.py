@@ -77,7 +77,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(
     title="OpenAI-Proxy-via-Browser",
-    version="0.1.0",
+    version="0.5.2",
     description="通过 Chrome 扩展驱动浏览器网页，对外提供 OpenAI 兼容的 Chat Completions 接口。",
     lifespan=lifespan,
 )
