@@ -52,7 +52,7 @@ def _enable_windows_vt() -> None:
             kernel32.SetConsoleMode(handle, mode.value | ENABLE_VIRTUAL_TERMINAL_PROCESSING)
     except Exception:  # noqa: BLE001
         # 开启失败则退回纯文本，不影响功能
-        pass
+        _ = None  # noqa: S110
 
 
 _enable_windows_vt()
