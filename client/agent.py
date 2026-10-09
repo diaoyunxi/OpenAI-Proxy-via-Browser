@@ -46,6 +46,7 @@ class Agent:
         self.max_iterations = max_iterations
         self.tool_specs = [get_tool_spec(f) for f in self.tools.values()]
         # 对话历史（不含系统提示，系统提示在每次请求时动态生成）
+        self.max_history: int = 200  # 对话历史上限，防止长期运行内存增长 (CWE-770)
         self.history: List[Dict[str, str]] = []
 
     # ---- 对外 API ----
@@ -53,6 +54,9 @@ class Agent:
         """执行一轮 agent 对话，返回最终自然语言回答。"""
         self._format_retried = False  # 工具调用格式纠正重试标志，每次对话重置
         self.history.append({"role": "user", "content": user_input})
+        # 裁剪旧历史，防止长期多轮对话内存无限增长 (CWE-770)
+        if len(self.history) > self.max_history:
+            self.history = self.history[-self.max_history:]
         for step in range(1, self.max_iterations + 1):
             messages = self._build_messages()
             try:
