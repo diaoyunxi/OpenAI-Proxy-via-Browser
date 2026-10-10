@@ -19,10 +19,9 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Callable
 
+from config import GatewayConfig
 from fastapi import WebSocket, WebSocketDisconnect
 from fastapi.websockets import WebSocketState
-
-from config import GatewayConfig
 from protocol import (
     C2G_ACCEPTED,
     C2G_CHUNK,
