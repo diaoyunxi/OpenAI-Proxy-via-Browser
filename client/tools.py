@@ -115,10 +115,12 @@ _SENSITIVE_PATH_PREFIXES = (
 })
 def write_file(path: str, content: str) -> str:
     # 安全: 路径遍历防护 (CWE-22)
+    # 修复: 与 read_file 统一使用 _WORKSPACE_DIR 而非 os.getcwd()，
+    # 防止 OAP_WORKSPACE_DIR 设置后 write_file 仍可写入 cwd 外的文件
     resolved = os.path.realpath(path)
-    cwd = os.path.realpath(os.getcwd())
-    if not resolved.startswith(cwd + os.sep) and resolved != cwd:
-        return "⚠️ 安全限制: 不允许写入当前工作目录之外的文件"
+    workspace = os.path.realpath(_WORKSPACE_DIR)
+    if not resolved.startswith(workspace + os.sep) and resolved != workspace:
+        return "⚠️ 安全限制: 不允许写入工作目录以外的文件"
     # 路径安全校验：拒绝写入系统敏感目录 (CWE-73)
     if any(resolved.startswith(prefix) for prefix in _SENSITIVE_PATH_PREFIXES):
         return f"⚠️ 出于安全考虑，禁止写入敏感路径：{path}"
