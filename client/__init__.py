@@ -8,4 +8,4 @@ from .tools import BUILTIN_TOOLS, list_tool_specs
 
 __all__ = ["Agent", "BUILTIN_TOOLS", "OAPClient", "OAPError", "list_tool_specs"]
 
-__version__ = "0.1.1"
+__version__ = "0.5.2"
