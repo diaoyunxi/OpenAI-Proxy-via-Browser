@@ -167,8 +167,8 @@ def http_request(url: str, method: str = "GET", body: str = None) -> str:
         if parsed.scheme not in ("http", "https"):
             return f"不允许的 URL scheme '{parsed.scheme}'，仅支持 http/https"
         data = body.encode("utf-8") if body else None
-        req = urllib.request.Request(url, data=data, method=method.upper())
-        with urllib.request.urlopen(req, timeout=20) as r:
+        req = urllib.request.Request(url, data=data, method=method.upper())  # noqa: S310
+        with urllib.request.urlopen(req, timeout=20) as r:  # noqa: S310
             return r.read(8000).decode("utf-8", "replace")
     except urllib.error.HTTPError as e:
         return f"HTTP 错误 {e.code}: {e.reason}"

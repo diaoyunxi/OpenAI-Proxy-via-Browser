@@ -64,9 +64,9 @@ class OAPClient:
         }
         if extra_headers:
             headers.update(extra_headers)
-        req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+        req = urllib.request.Request(url, data=data, headers=headers, method="POST")  # noqa: S310
         try:
-            return urllib.request.urlopen(req, timeout=self.timeout)
+            return urllib.request.urlopen(req, timeout=self.timeout)  # noqa: S310
         except urllib.error.HTTPError as e:
             body = e.read().decode("utf-8", "replace")
             raise OAPError(f"网关返回 HTTP {e.code}: {body[:300]}") from e
@@ -83,9 +83,9 @@ class OAPClient:
     def health(self) -> dict[str, Any]:
         """查询网关健康状态。"""
         _validate_url_scheme(self.base_url + "/health")
-        req = urllib.request.Request(self.base_url + "/health", method="GET")
+        req = urllib.request.Request(self.base_url + "/health", method="GET")  # noqa: S310
         try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as r:
+            with urllib.request.urlopen(req, timeout=self.timeout) as r:  # noqa: S310
                 return json.loads(r.read().decode("utf-8"))
         except Exception as e:
             raise OAPError(f"健康检查失败: {e}") from e
@@ -93,9 +93,9 @@ class OAPClient:
     def models(self) -> dict[str, Any]:
         """获取模型列表。"""
         _validate_url_scheme(self.base_url + "/v1/models")
-        req = urllib.request.Request(self.base_url + "/v1/models", method="GET")
+        req = urllib.request.Request(self.base_url + "/v1/models", method="GET")  # noqa: S310
         try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as r:
+            with urllib.request.urlopen(req, timeout=self.timeout) as r:  # noqa: S310
                 return json.loads(r.read().decode("utf-8"))
         except Exception as e:
             raise OAPError(f"获取模型列表失败: {e}") from e
@@ -139,10 +139,10 @@ class OAPClient:
         """取消一个正在进行的请求。"""
         url = f"{self.base_url}/v1/cancel/{request_id}"
         _validate_url_scheme(url)
-        req = urllib.request.Request(url, method="POST",
+        req = urllib.request.Request(url, method="POST",  # noqa: S310
                                      headers={"Content-Type": "application/json"})
         try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as r:
+            with urllib.request.urlopen(req, timeout=self.timeout) as r:  # noqa: S310
                 return json.loads(r.read().decode("utf-8"))
         except Exception as e:
             raise OAPError(f"取消请求失败: {e}") from e

@@ -457,7 +457,7 @@ class BrowserBridge:
                 # 吸收等待协程的异常，避免 asyncio 报告“异常从未被取回”
                 try:
                     await waiter
-                except (asyncio.CancelledError, Exception):
+                except (asyncio.CancelledError, Exception):  # noqa: S110
                     pass
             if handle is not None:
                 self._tasks.pop(handle.request_id, None)

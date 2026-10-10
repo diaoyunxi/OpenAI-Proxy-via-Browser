@@ -241,6 +241,7 @@ OpenAI-Proxy-via-Browser/
 │   ├── cli.py              # 命令行交互 demo
 │   └── README.md           # 客户端使用文档
 ├── tools/make_icons.py      # 用标准库生成扩展图标
+├── tools/find-selectors.js  # 交互式 CSS 选择器发现工具
 ├── prompt_template.txt      # 服务端消息包装模板（自动生成·不入库·热加载）
 ├── system_prompt.txt        # 服务端默认系统提示词（自动生成·不入库·热加载）
 ├── agent_system_prompt.txt  # 客户端 Agent 默认系统提示词（自动生成·不入库·热加载）
