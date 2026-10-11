@@ -41,7 +41,7 @@ def _is_private_ip(hostname: str) -> bool:
         addrinfo = socket.getaddrinfo(hostname, None)
     except socket.gaierror:
         return True  # 无法解析的主机名，拒绝以防绕过
-    for family, _, _, _, sockaddr in addrinfo:
+    for _family, _, _, _, sockaddr in addrinfo:
         ip = ipaddress.ip_address(sockaddr[0])
         if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
             return True
@@ -88,7 +88,7 @@ def shell(command: str, cwd: str = None, timeout: int = 30) -> str:
         args = shlex.split(command)
         if not args:
             return "⚠️ 命令为空"
-        proc = subprocess.run(args, shell=False, cwd=cwd or os.getcwd(),
+        proc = subprocess.run(args, check=False, shell=False, cwd=cwd or os.getcwd(),
                               capture_output=True, text=True, timeout=timeout)
         out = (proc.stdout or "") + (proc.stderr or "")
         return out[:8000] or "(无输出)"
