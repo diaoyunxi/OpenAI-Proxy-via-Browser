@@ -126,7 +126,7 @@ class Agent:
     # ---- 内部实现 ----
     def _build_messages(self) -> list[dict[str, str]]:
         system = render_system(self.system_prompt, self.tool_specs)
-        return [{"role": "system", "content": system}] + list(self.history)
+        return [{"role": "system", "content": system}, *list(self.history)]
 
     @staticmethod
     def _extract_content(resp: dict[str, Any]) -> str:
@@ -191,7 +191,7 @@ class Agent:
             return str(func(**args))
         except TypeError as e:
             return f"⚠️ 工具参数错误（{name}）：{e}"
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             return f"⚠️ 工具执行异常（{name}）：{e}"
 
 

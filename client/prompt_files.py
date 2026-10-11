@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """提示词外部文件加载器（零依赖、热加载）。
 
 客户端侧同样把提示词放到仓库根目录的 .txt 文件，保持与服务端一致的体验：
@@ -93,7 +92,7 @@ def load_text(filename: str, default: str = "") -> str:
         # utf-8-sig：兼容 Windows 记事本保存时写入的 BOM
         text = path.read_text(encoding="utf-8-sig")
     except (OSError, UnicodeDecodeError) as exc:
-        _warn_once(filename, "读取失败（%s），已回退到内置默认提示词" % exc)
+        _warn_once(filename, f"读取失败（{exc}），已回退到内置默认提示词")
         _CACHE.pop(filename, None)
         return default
 
@@ -148,7 +147,7 @@ def _ensure_server_prompt_files() -> list[Path]:
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         return list(module.ensure_prompt_files())
-    except Exception as exc:  # noqa: BLE001 - 仅为可选增强，失败不影响客户端
+    except Exception as exc:
         logger.debug("跳过服务端提示词文件生成：%s", exc)
         return []
 

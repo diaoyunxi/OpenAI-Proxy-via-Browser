@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """提示词外部文件加载器（热加载）。
 
 把「发给 AI 的提示词」从代码中剥离到仓库根目录的 .txt 文件，改动后无需重启
@@ -26,7 +25,7 @@ from __future__ import annotations
 import logging
 import re
 from pathlib import Path
-from typing import Match
+from re import Match
 
 logger = logging.getLogger("oap.prompts")
 

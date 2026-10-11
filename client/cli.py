@@ -50,9 +50,9 @@ def _enable_windows_vt() -> None:
         mode = ctypes.c_uint32()
         if kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
             kernel32.SetConsoleMode(handle, mode.value | ENABLE_VIRTUAL_TERMINAL_PROCESSING)
-    except Exception:  # noqa: BLE001
+    except Exception:
         # 开启失败则退回纯文本，不影响功能
-        _ = None  # noqa: S110
+        _ = None
 
 
 _enable_windows_vt()
@@ -79,7 +79,7 @@ def _paint_think(text: str) -> str:
     )
 
 
-def main(argv: list[str] = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     # 首次运行时补齐缺失的提示词文件（已存在的一律不动）
     created = ensure_prompt_files()
     if created:
