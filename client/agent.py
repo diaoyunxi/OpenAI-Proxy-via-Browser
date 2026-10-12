@@ -126,7 +126,7 @@ class Agent:
     # ---- 内部实现 ----
     def _build_messages(self) -> list[dict[str, str]]:
         system = render_system(self.system_prompt, self.tool_specs)
-        return [{"role": "system", "content": system}] + list(self.history)
+        return [{"role": "system", "content": system}, *self.history]
 
     @staticmethod
     def _extract_content(resp: dict[str, Any]) -> str:
