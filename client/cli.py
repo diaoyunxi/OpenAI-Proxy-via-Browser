@@ -79,7 +79,7 @@ def _paint_think(text: str) -> str:
     )
 
 
-def main(argv: list[str] = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     # 首次运行时补齐缺失的提示词文件（已存在的一律不动）
     created = ensure_prompt_files()
     if created:

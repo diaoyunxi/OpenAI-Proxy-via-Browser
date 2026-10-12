@@ -79,7 +79,7 @@ def _tool(name: str, description: str, parameters: dict[str, Any]):
     },
     "required": ["command"]
 })
-def shell(command: str, cwd: str = None, timeout: int = 30) -> str:
+def shell(command: str, cwd: str | None = None, timeout: int = 30) -> str:
     normalized = _normalize_command(command)
     if any(d in normalized for d in _DANGEROUS):
         return "⚠️ 出于安全考虑，疑似危险命令已被阻止执行：" + command
@@ -187,7 +187,7 @@ def list_dir(path: str = ".", limit: int = 100) -> str:
     },
     "required": ["url"]
 })
-def http_request(url: str, method: str = "GET", body: str = None) -> str:
+def http_request(url: str, method: str = "GET", body: str | None = None) -> str:
     try:
         # 验证 URL scheme，仅允许 http/https (Bandit B310)
         from urllib.parse import urlparse
