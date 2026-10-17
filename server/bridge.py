@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """浏览器桥接层：管理 WebSocket 连接池、任务派发、流式回传与超时控制。
 
 设计要点：
@@ -15,9 +14,10 @@ import asyncio
 import logging
 import time
 import uuid
-from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field
-from typing import Any, AsyncIterator, Callable
+from typing import Any
 
 from config import GatewayConfig
 from fastapi import WebSocket, WebSocketDisconnect
@@ -197,10 +197,8 @@ class BrowserBridge:
         """停止后台任务并清理全部在途任务。"""
         if self._heartbeat_task and not self._heartbeat_task.done():
             self._heartbeat_task.cancel()
-            try:
+            with suppress(asyncio.CancelledError):
                 await self._heartbeat_task
-            except asyncio.CancelledError:
-                pass
         self._heartbeat_task = None
         for request_id in list(self._tasks):
             self._tasks[request_id].fail(GW_ERR_NO_BROWSER, "网关正在关闭")
@@ -238,7 +236,7 @@ class BrowserBridge:
         """
         try:
             raw = await asyncio.wait_for(websocket.receive_text(), timeout=self._config.hello_timeout)
-        except (asyncio.TimeoutError, WebSocketDisconnect):
+        except (TimeoutError, WebSocketDisconnect):
             logger.warning("扩展握手超时或连接已断开")
             return None
 
@@ -416,7 +414,7 @@ class BrowserBridge:
 
         try:
             await asyncio.wait_for(self._lock.acquire(), timeout=self._config.queue_wait)
-        except asyncio.TimeoutError as exc:
+        except TimeoutError as exc:
             raise TaskFailedError(GW_ERR_NO_BROWSER, "浏览器正忙，排队等待超时") from exc
 
         handle: TaskHandle | None = None
@@ -455,10 +453,8 @@ class BrowserBridge:
                 if not waiter.done():
                     waiter.cancel()
                 # 吸收等待协程的异常，避免 asyncio 报告“异常从未被取回”
-                try:
+                with suppress(asyncio.CancelledError, Exception):
                     await waiter
-                except (asyncio.CancelledError, Exception):  # noqa: S110
-                    pass
             if handle is not None:
                 self._tasks.pop(handle.request_id, None)
             self._lock.release()
@@ -526,10 +522,8 @@ class BrowserBridge:
             if remaining <= 0:
                 handle.fail(GW_ERR_TIMEOUT, "浏览器响应超时")
                 break
-            try:
+            with suppress(asyncio.TimeoutError):
                 await asyncio.wait_for(handle.event.wait(), timeout=min(remaining, _HEARTBEAT_CHECK_INTERVAL))
-            except asyncio.TimeoutError:
-                pass
             if disconnect_checker is not None and await self._is_disconnected(disconnect_checker):
                 raise ClientDisconnectedError()
 
