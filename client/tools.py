@@ -172,7 +172,13 @@ def write_file(path: str, content: str) -> str:
 })
 def list_dir(path: str = ".", limit: int = 100) -> str:
     try:
-        entries = sorted(os.listdir(path or "."))
+        # 与 read_file / write_file 一致：限制在工作目录内，防止列任意目录
+        # （如 list_dir("/etc") 泄露系统文件列表，list_dir("~/.ssh") 泄露密钥文件名）
+        abs_path = os.path.realpath(path or ".")
+        workspace = os.path.realpath(_WORKSPACE_DIR)
+        if not abs_path.startswith(workspace + os.sep) and abs_path != workspace:
+            return f"⚠️ 安全限制：不允许列举工作目录以外的路径 ({path})"
+        entries = sorted(os.listdir(abs_path))
         return "\n".join(entries[:limit]) or "(空目录)"
     except Exception as e:  # noqa: BLE001
         return f"列举失败：{e}"
