@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
 from .oap_client import OAPClient, OAPError
@@ -31,20 +32,30 @@ _THINK_TAG_RE = re.compile(
 _TOOL_ANCHOR_RE = re.compile(r'\{\s*"tool"\s*:', re.IGNORECASE)
 
 
+@dataclass
+class AgentConfig:
+    """Agent 配置项，将构造函数参数集中封装以减少参数数量 (PLR0913)。"""
+
+    system_prompt: str = ""
+    model: str = "browser-proxy"
+    host: str | None = None
+    timeout: int = 180
+    max_iterations: int = 8
+
+
 class Agent:
     """基于网关的 agent 客户端，负责多轮对话与工具调用循环。"""
 
     def __init__(self, client: OAPClient, tools: dict[str, Callable],
-                 system_prompt: str = "", model: str = "browser-proxy",
-                 host: str | None = None, timeout: int = 180,
-                 max_iterations: int = 8):
+                 config: AgentConfig | None = None):
+        cfg = config or AgentConfig()
         self.client = client
         self.tools = dict(tools)
-        self.system_prompt = system_prompt
-        self.model = model
-        self.host = host
-        self.timeout = timeout
-        self.max_iterations = max_iterations
+        self.system_prompt = cfg.system_prompt
+        self.model = cfg.model
+        self.host = cfg.host
+        self.timeout = cfg.timeout
+        self.max_iterations = cfg.max_iterations
         self.tool_specs = [get_tool_spec(f) for f in self.tools.values()]
         # 对话历史（不含系统提示，系统提示在每次请求时动态生成）
         self.history: list[dict[str, str]] = []

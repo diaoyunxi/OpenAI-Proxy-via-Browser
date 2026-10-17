@@ -112,9 +112,15 @@ def main(argv: list[str] = None) -> int:
     specs = list_tool_specs()
     print(_paint(C_CYAN, "[工具]") +
           f" 已加载 {len(specs)} 个内置工具：{', '.join(s['name'] for s in specs)}")
-    agent = Agent(client, BUILTIN_TOOLS, system_prompt=args.system,
-                  model=args.model, host=args.host, timeout=args.timeout,
-                  max_iterations=args.max_iterations)
+    from .agent import AgentConfig
+    cfg = AgentConfig(
+        system_prompt=args.system,
+        model=args.model,
+        host=args.host,
+        timeout=args.timeout,
+        max_iterations=args.max_iterations,
+    )
+    agent = Agent(client, BUILTIN_TOOLS, config=cfg)
 
     print("\n输入你的问题（输入 exit 或 quit 退出，输入 /reset 清空上下文）：")
     _max_iter = 1000000  # Safety limit
