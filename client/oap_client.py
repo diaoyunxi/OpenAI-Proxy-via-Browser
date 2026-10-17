@@ -23,6 +23,9 @@ from typing import Any, Optional
 
 from .sse import iter_sse_events
 
+# 请求体大小限制 (1MB) 防止超大 payload 导致 OOM (CWE-770)
+MAX_REQUEST_BODY_SIZE = 1 * 1024 * 1024
+
 # 允许的 URL scheme 白名单，防止 file:// / ftp:// 等非预期访问
 _ALLOWED_SCHEMES = {"http", "https"}
 
