@@ -1,5 +1,7 @@
 > [← 返回文档目录](../README.md) ｜ 原文件：`chrome扩展规范.md`。
 
+> 本文为 Chrome 扩展通用规范参考，不代表本仓库 `extension/manifest.json` 的实际权限声明；实际实现以 README 第 9 节与 manifest 为准。
+
 Chrome 扩展程序的开发规范，目前的核心是 **Manifest V3**。下面是一份详尽的规范说明。
 
 ### 📜 核心：清单文件 (manifest.json)

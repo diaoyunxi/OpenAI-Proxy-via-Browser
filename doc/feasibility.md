@@ -1,5 +1,7 @@
 > [← 返回文档目录](../README.md) ｜ 原文件：`可行性分析.md`。
 
+> 本文为早期可行性分析，其中 `chrome.webRequest` 等方案未在当前实现采用；当前实现以 README 第 9 节为准。
+
 ## ✅ 总体可行性
 你的架构是 **Python（API网关） ↔ WebSocket ↔ Chrome扩展（浏览器自动化）**，每个环节都有成熟的浏览器 API 和 Python 库支持，所以**代码能跑通**。
 
