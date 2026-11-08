@@ -1,3 +1,5 @@
+> [← 返回文档目录](../README.md) ｜ 原文件：`client/README.md`。
+
 # OpenAI-Proxy Agents 客户端（零依赖）
 
 本项目网关（`server/`）是「纯文本透传」的 OpenAI 兼容 API，**本身不做 agent、不实现工具执行**。
