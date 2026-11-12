@@ -124,7 +124,7 @@ class GatewayConfig:
             prompt_mode=_read_str("OAP_PROMPT_MODE", "all").lower(),
             default_model=_read_str("OAP_DEFAULT_MODEL", "browser-proxy"),
             models=_read_list("OAP_MODELS", ["browser-proxy"]),
-            allow_cors_any=_read_bool("OAP_ALLOW_CORS_ANY", True),
+            allow_cors_any=_read_bool("OAP_ALLOW_CORS_ANY", False),
         )
 
     def validate(self) -> None:
