@@ -7,15 +7,16 @@
 """
 from __future__ import annotations
 
-import os
 import ipaddress
+import os
 import shlex
 import socket
 import subprocess
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 # 危险命令关键词（仅做提示性拦截，并非绝对安全保证）
 # 危险命令关键词（仅做提示性拦截，并非绝对安全保证）
@@ -41,7 +42,7 @@ def _is_private_ip(hostname: str) -> bool:
         addrinfo = socket.getaddrinfo(hostname, None)
     except socket.gaierror:
         return True  # 无法解析的主机名，拒绝以防绕过
-    for family, _, _, _, sockaddr in addrinfo:
+    for _family, _, _, _, sockaddr in addrinfo:
         ip = ipaddress.ip_address(sockaddr[0])
         if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
             return True
@@ -79,7 +80,7 @@ def _tool(name: str, description: str, parameters: dict[str, Any]):
     },
     "required": ["command"]
 })
-def shell(command: str, cwd: str = None, timeout: int = 30) -> str:
+def shell(command: str, cwd: str | None = None, timeout: int = 30) -> str:
     normalized = _normalize_command(command)
     if any(d in normalized for d in _DANGEROUS):
         return "⚠️ 出于安全考虑，疑似危险命令已被阻止执行：" + command
@@ -96,7 +97,7 @@ def shell(command: str, cwd: str = None, timeout: int = 30) -> str:
         return f"⚠️ 命令执行超时（>{timeout}s）"
     except ValueError as e:
         return f"⚠️ 命令解析错误：{e}"
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         return f"执行出错：{e}"
 
 
@@ -117,10 +118,10 @@ def read_file(path: str, max_bytes: int = 200000) -> str:
             return f"⚠️ 安全限制：不允许访问工作目录以外的路径 ({path})"
         if not os.path.isfile(abs_path):
             return f"文件不存在：{path}"
-        with open(abs_path, "r", encoding="utf-8", errors="replace") as f:
+        with open(abs_path, encoding="utf-8", errors="replace") as f:
             data = f.read(max_bytes)
         return data or "(空文件)"
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         return f"读取失败：{e}"
 
 
@@ -158,7 +159,7 @@ def write_file(path: str, content: str) -> str:
         with open(resolved, "w", encoding="utf-8") as f:
             f.write(content)
         return f"已写入 {len(content)} 字符到 {resolved}"
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         return f"写入失败：{e}"
 
 
@@ -174,7 +175,7 @@ def list_dir(path: str = ".", limit: int = 100) -> str:
     try:
         entries = sorted(os.listdir(path or "."))
         return "\n".join(entries[:limit]) or "(空目录)"
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         return f"列举失败：{e}"
 
 
@@ -187,7 +188,7 @@ def list_dir(path: str = ".", limit: int = 100) -> str:
     },
     "required": ["url"]
 })
-def http_request(url: str, method: str = "GET", body: str = None) -> str:
+def http_request(url: str, method: str = "GET", body: str | None = None) -> str:
     try:
         # 验证 URL scheme，仅允许 http/https (Bandit B310)
         from urllib.parse import urlparse
@@ -203,12 +204,12 @@ def http_request(url: str, method: str = "GET", body: str = None) -> str:
             return f"⚠️ 出于安全考虑，禁止访问内网地址: {hostname}"
 
         data = body.encode("utf-8") if body else None
-        req = urllib.request.Request(url, data=data, method=method.upper())  # noqa: S310
-        with urllib.request.urlopen(req, timeout=20) as r:  # noqa: S310
+        req = urllib.request.Request(url, data=data, method=method.upper())
+        with urllib.request.urlopen(req, timeout=20) as r:
             return r.read(8000).decode("utf-8", "replace")
     except urllib.error.HTTPError as e:
         return f"HTTP 错误 {e.code}: {e.reason}"
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         return f"请求失败：{e}"
 
 

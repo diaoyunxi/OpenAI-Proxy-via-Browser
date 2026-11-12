@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """OpenAI Chat Completions 响应格式的构造工具。
 
 负责把浏览器侧拿到的纯文本，包装成 OpenAI 官方兼容的 JSON 或 SSE 帧。
@@ -10,7 +9,8 @@ import json
 import time
 import unicodedata
 import uuid
-from typing import Any, Iterator
+from collections.abc import Iterator
+from typing import Any
 
 SSE_DONE = "data: [DONE]\n\n"
 SSE_PING = ": ping\n\n"

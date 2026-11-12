@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """OpenAI-Proxy-via-Browser 网关服务入口。
 
 启动方式：
@@ -11,8 +10,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from contextlib import asynccontextmanager
-from typing import Any, AsyncIterator
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager, suppress
+from typing import Any
 
 from bridge import (
     BrowserBridge,
@@ -372,7 +372,7 @@ async def stream_response(
             while True:
                 try:
                     item = await asyncio.wait_for(handle.queue.get(), timeout=1.0)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     if waiter.done():
                         break  # 任务已结束且队列已空
                     if await _check_disconnected(disconnect_checker):
@@ -466,10 +466,8 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     await websocket.accept()
     session_id = await bridge.register(websocket)
     if session_id is None:
-        try:
+        with suppress(RuntimeError):
             await websocket.close(code=4000, reason="handshake failed")
-        except RuntimeError:
-            pass
         return
 
     try:
