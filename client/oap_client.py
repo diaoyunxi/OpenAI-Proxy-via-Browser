@@ -11,6 +11,9 @@
 """
 from __future__ import annotations
 
+# 请求体大小限制 (1MB) 防止超大 payload 导致 OOM (CWE-770)
+MAX_REQUEST_BODY_SIZE = 1 * 1024 * 1024
+
 import json
 import urllib.error
 import urllib.parse
