@@ -1,5 +1,5 @@
 # OpenAI-Proxy-via-Browser 网关服务依赖
-# 要求 Python 3.10 及以上版本
+# 要求 Python 3.11 及以上版本（fastapi>=0.165、websockets>=17.4 的 requires-python 均为 >=3.11）
 fastapi>=0.165.0,<1.0.0
 uvicorn[standard]>=0.54.0,<1.0.0
 websockets>=17.4
