@@ -297,7 +297,9 @@ async def chat_completions(request: Request) -> Any:
             disconnect_checker=disconnect_checker,
         )
         # 记录任务结果详情
-        logger.info("任务完成: request_id=%s text_length=%d finish_reason=%s", handle.request_id, len(handle.text) if handle.text else 0, handle.finish_reason)
+        logger.info(
+            "任务完成: request_id=%s text_length=%d finish_reason=%s",
+            handle.request_id, len(handle.text) if handle.text else 0, handle.finish_reason)
         if handle.tool_calls:
             logger.info("任务包含工具调用: %d 个", len(handle.tool_calls))
             logger.debug("工具调用详情: %r", handle.tool_calls)
@@ -310,11 +312,18 @@ async def chat_completions(request: Request) -> Any:
             prompt_tokens=prompt_tokens,
             tool_calls=handle.tool_calls,
         )
-        logger.info("返回给客户端: model=%s finish_reason=%s tool_calls_count=%d content_length=%d", model, response_data["choices"][0]["finish_reason"], len(response_data.get("choices", [{}])[0].get("message", {}).get("tool_calls") or []), len(response_data["choices"][0]["message"].get("content") or ""))
+        logger.info(
+            "返回给客户端: model=%s finish_reason=%s tool_calls_count=%d content_length=%d",
+            model,
+            response_data["choices"][0]["finish_reason"],
+            len(response_data.get("choices", [{}])[0].get("message", {}).get("tool_calls") or []),
+            len(response_data["choices"][0]["message"].get("content") or ""))
         return JSONResponse(content=response_data)
     except ClientDisconnectedError:
         logger.info("客户端在等待期间断开：%s", completion_id)
-        return JSONResponse(status_code=499, content=build_error(message="客户端已断开连接", code="client_disconnected"))
+        return JSONResponse(
+            status_code=499,
+            content=build_error(message="客户端已断开连接", code="client_disconnected"))
     except BrowserUnavailableError as exc:
         return error_response(getattr(exc, "code", None), str(exc))
     except TaskTimeoutError as exc:

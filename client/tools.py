@@ -41,7 +41,7 @@ def _is_private_ip(hostname: str) -> bool:
         addrinfo = socket.getaddrinfo(hostname, None)
     except socket.gaierror:
         return True  # 无法解析的主机名，拒绝以防绕过
-    for family, _, _, _, sockaddr in addrinfo:
+    for _family, _, _, _, sockaddr in addrinfo:
         ip = ipaddress.ip_address(sockaddr[0])
         if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
             return True
